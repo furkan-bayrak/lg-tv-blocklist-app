@@ -1,0 +1,12 @@
+{
+  "id": "io.github.furkanbayrak.lgtvblocklist",
+  "version": "0.1.0",
+  "vendor": "furkan-bayrak",
+  "title": "LG TV Blocklist",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "main": "index.html",
+  "iconColor": "#141419",
+  "type": "web",
+  "appDescription": "One-switch DNS blocking for rooted LG webOS TVs (companion to the lg-tv-blocklist project). S1 skeleton: no blocking yet."
+}
