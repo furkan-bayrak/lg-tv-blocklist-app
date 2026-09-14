@@ -1,0 +1,73 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check LF line endings in shell scripts
+        run: |
+          if grep -rIl $'\r' app/scripts; then
+            echo "::error::CRLF detected in app/scripts — commit with LF (see .gitattributes)"
+            exit 1
+          fi
+
+      - name: Build (TypeScript -> ES5) and run the ES5 guard
+        run: npm run build && npm run check:es5
+
+      - name: Package IPK
+        run: npx ares-package --outdir dist --no-minify app
+
+      - name: Install webosbrew toolbox (gen-manifest, ipk-verify, firmware data)
+        run: |
+          base=https://github.com/webosbrew/dev-toolbox-cli/releases/download/v20260818-ea38b20
+          curl -fsSLo /tmp/gen-manifest.deb "$base/webosbrew-toolbox-gen-manifest_0.9.0-1_amd64.deb"
+          curl -fsSLo /tmp/ipk-verify.deb   "$base/webosbrew-toolbox-ipk-verify_0.9.0-1_amd64.deb"
+          curl -fsSLo /tmp/fw-symbols.deb   "$base/webosbrew-toolbox-fw-symbols_0.9.0-1_amd64.deb"
+          sudo dpkg -i /tmp/gen-manifest.deb /tmp/ipk-verify.deb /tmp/fw-symbols.deb
+
+      - name: Generate Homebrew manifest (rootRequired lives in the manifest)
+        run: |
+          webosbrew-gen-manifest \
+            --pkgfile dist/*.ipk \
+            --output dist/app.manifest.json \
+            --icon "https://github.com/furkan-bayrak/lg-tv-blocklist-app/raw/main/app/icon.png" \
+            --link "https://github.com/furkan-bayrak/lg-tv-blocklist-app" \
+            --root true
+
+      - name: Assert manifest values
+        run: |
+          jq -e '.id == "io.github.furkanbayrak.lgtvblocklist"
+                 and .version == "0.1.0"
+                 and .rootRequired == true
+                 and (.ipkHash.sha256 | length == 64)' dist/app.manifest.json > /dev/null
+
+      - name: Verify IPK compatibility (webosbrew-ipk-verify)
+        run: webosbrew-ipk-verify dist/*.ipk
+
+      - name: Show artifact hash
+        run: sha256sum dist/*.ipk
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ipk
+          path: |
+            dist/*.ipk
+            dist/app.manifest.json
