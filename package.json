@@ -1,0 +1,24 @@
+{
+  "name": "lg-tv-blocklist-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Companion app to lg-tv-blocklist: one-switch DNS blocking for rooted LG webOS TVs, installed via the Homebrew Channel.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/furkan-bayrak/lg-tv-blocklist-app.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check:es5": "node tools/check-es5.mjs",
+    "package": "ares-package --outdir dist --no-minify app",
+    "dist": "npm run build && npm run check:es5 && npm run package"
+  },
+  "devDependencies": {
+    "@webos-tools/cli": "3.2.6",
+    "typescript": "5.9.3"
+  }
+}
