@@ -48,6 +48,10 @@
   }
 
   function checkBridge(): void {
+    if (!LgBlocklistBridge.available()) {
+      show('Bridge unavailable', LgBlocklistBridge.diagnose());
+      return;
+    }
     show('Checking bridge...', 'Calling getConfiguration (may take a moment after boot).');
     LgBlocklistBridge.getConfiguration(function (config: HbConfiguration): void {
       var healthy = config.root ? 'root access confirmed' : 'root NOT available';
@@ -102,9 +106,18 @@
   focusIndex = 0;
   buttons[0].focus();
 
-  if (!LgBlocklistBridge.available()) {
-    show('Bridge unavailable', 'webOS.service is not available in this window. Open the app on the TV (not in a desktop browser).');
+  // Review fix: state the concrete reason when the bridge cannot work instead of a
+  // bare "Bridge unavailable". webOS.* comes from the vendored webOSTV.js, so a
+  // missing/damaged bundle is the realistic failure mode.
+  var problem = LgBlocklistBridge.diagnose();
+  if (problem) {
+    show('Bridge unavailable', problem);
   } else {
-    show('Not checked yet', 'Press "Check bridge (root)" to query the Homebrew Channel service.');
+    var version = LgBlocklistBridge.libVersion();
+    var hint = 'Press "Check bridge (root)" to query the Homebrew Channel service.';
+    if (version) {
+      hint = hint + ' webOSTV.js ' + version + ' loaded.';
+    }
+    show('Not checked yet', hint);
   }
 })();

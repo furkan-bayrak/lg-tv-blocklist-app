@@ -33,25 +33,35 @@ interface HbConfiguration {
   errorText?: string;
 }
 
+interface WebOSRequestOptions {
+  method: string;
+  parameters?: { [key: string]: unknown };
+  onSuccess?: (response: unknown) => void;
+  onFailure?: (error: unknown) => void;
+}
+
 interface WebOSServiceApi {
-  service: {
-    request: (
-      uri: string,
-      options: {
-        method: string;
-        parameters?: { [key: string]: unknown };
-        onSuccess?: (response: unknown) => void;
-        onFailure?: (error: unknown) => void;
-      }
-    ) => void;
+  // Library version string (e.g. "1.2.13"); webOSTV.js sets it, old shims may not.
+  libVersion?: string;
+  service?: {
+    request?: (uri: string, options: WebOSRequestOptions) => void;
   };
 }
 
-// Provided by the TV platform (webOSTV.js). May be absent in a desktop browser.
+interface WebOSRequestTarget {
+  request: (uri: string, options: WebOSRequestOptions) => void;
+}
+
+// Set by the vendored webOSTV.js (app/vendor/webOSTV.js), which index.html loads
+// before this script. The TV platform does NOT inject it: without the bundle the
+// global is simply undefined (provenance: THIRD-PARTY-NOTICES.md). diagnose()
+// turns both failure modes into an honest UI message.
 declare var webOS: WebOSServiceApi | undefined;
 
 interface LgBlocklistBridgeApi {
   available(): boolean;
+  diagnose(): string;
+  libVersion(): string;
   getConfiguration(onDone: (response: HbConfiguration) => void): void;
   exec(command: string, onDone: (response: HbExecResponse) => void): void;
   registerHook(onDone: (response: HbExecResponse) => void): void;
@@ -77,9 +87,43 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
   var CMD_REMOVE_HOOK = 'rm -rf ' + HOOK_LINK;
   var CMD_HOOK_STATE = 'readlink ' + HOOK_LINK;
 
+  function getRequestTarget(): WebOSRequestTarget | null {
+    if (typeof webOS === 'undefined' || !webOS) {
+      return null;
+    }
+    var service = webOS.service;
+    if (!service || typeof service.request !== 'function') {
+      return null;
+    }
+    return service as WebOSRequestTarget;
+  }
+
+  function libVersion(): string {
+    if (typeof webOS === 'undefined' || !webOS || typeof webOS.libVersion !== 'string') {
+      return '';
+    }
+    return webOS.libVersion;
+  }
+
+  // Empty string = bridge usable; otherwise a reason for the UI. Review fix: the app
+  // must never boot to a bare "Bridge unavailable" without saying which piece is missing.
+  function diagnose(): string {
+    if (typeof webOS === 'undefined' || !webOS) {
+      return 'webOSTV.js did not load (window.webOS is undefined), so this app cannot reach ' +
+        'the Homebrew Channel service. The installed package looks incomplete - reinstall it ' +
+        'from the Homebrew Channel.';
+    }
+    if (!getRequestTarget()) {
+      var found = libVersion();
+      var detail = found ? ' (found webOSTV.js ' + found + ')' : '';
+      return 'The bundled webOSTV.js is missing webOS.service.request' + detail + ' - it is ' +
+        'too old or damaged. Reinstall the app package (it bundles webOSTV.js 1.2.13).';
+    }
+    return '';
+  }
+
   function available(): boolean {
-    return typeof webOS !== 'undefined' && !!webOS && !!webOS.service &&
-      typeof webOS.service.request === 'function';
+    return diagnose() === '';
   }
 
   function describeError(error: unknown): string {
@@ -98,12 +142,12 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
     onSuccess: (response: unknown) => void,
     onFailure: (error: unknown) => void
   ): void {
-    if (typeof webOS === 'undefined' || !webOS || !webOS.service ||
-        typeof webOS.service.request !== 'function') {
+    var target = getRequestTarget();
+    if (!target) {
       onFailure({ errorText: 'webOS.service bridge is not available in this window' });
       return;
     }
-    webOS.service.request(HBC_SERVICE, {
+    target.request(HBC_SERVICE, {
       method: method,
       parameters: parameters,
       onSuccess: onSuccess,
@@ -141,6 +185,8 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
 
   return {
     available: available,
+    diagnose: diagnose,
+    libVersion: libVersion,
     getConfiguration: getConfiguration,
     exec: exec,
     registerHook: registerHook,

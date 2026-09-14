@@ -13,6 +13,8 @@ startup-hook symlink, and uninstalls cleanly on a real TV (LG G1, webOS 6 — se
 ## What exists today
 
 - `app/` — the packaged web app (plain HTML/CSS + TypeScript compiled to ES5)
+- `app/vendor/webOSTV.js` — vendored LG webOSTVjs 1.2.13 (Apache-2.0); the platform does
+  not inject `webOS.*`, so the app bundles it — provenance + hashes in `THIRD-PARTY-NOTICES.md`
 - `src/` — TypeScript sources; pinned compiler, no framework, no runtime dependencies
 - `app/scripts/boot.sh` — the startup-hook script the app symlinks into
   `/var/lib/webosbrew/init.d/` (never copied — webosbrew store rule)
@@ -42,4 +44,4 @@ summary). Mechanics live in the design spec.
 
 ## License
 
-MIT — see LICENSE.
+MIT — see LICENSE. Bundled third-party components are listed in `THIRD-PARTY-NOTICES.md`.

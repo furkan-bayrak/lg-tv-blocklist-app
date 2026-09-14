@@ -1,2 +1,4 @@
 * text=auto eol=lf
 *.png binary
+# Vendored third-party code stays byte-for-byte (hash-pinned in THIRD-PARTY-NOTICES.md)
+app/vendor/** -text
