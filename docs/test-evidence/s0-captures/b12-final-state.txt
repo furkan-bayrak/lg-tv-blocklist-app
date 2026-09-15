@@ -1,0 +1,35 @@
+=== FINAL Fri Jan  1 01:07:45 CET 2021 uptime=467.15 ===
+---hooks---
+total 36
+drwxr-xr-x    2 root     root          4096 Jan  1 01:04 .
+drwxr-xr-x    5 root     root          4096 Jan  1 01:04 ..
+-rwxr-xr-x    1 root     root          2029 Sep 12  2026 00-block-lg-hosts
+-rwxr-xr-x    1 root     root          1657 Sep  9  2026 01-block-lan-discovery
+-rwxr-xr-x    1 root     root          6515 Sep 13  2026 02-block-dns-egress
+-rwxr-xr-x    1 root     root          2535 Sep 12  2026 03-block-lg-ip-egress
+-rwxr-xr-x    1 root     root          2013 Sep  9  2026 99-stop-services
+-rwxr-xr-x    1 root     root           280 Sep 12  2026 inputhook
+---nat---
+-A OUTPUT ! -d 127.0.0.0/8 -p udp -m udp --dport 53 -j DNAT --to-destination 192.168.179.1:53
+-A OUTPUT ! -d 127.0.0.0/8 -p tcp -m tcp --dport 53 -j DNAT --to-destination 192.168.179.1:53
+---853---
+-A OUTPUT -p tcp -m tcp --dport 853 -j DROP
+-A OUTPUT -p udp -m udp --dport 853 -j DROP
+---hosts---
+a151aa271729756dd3fdc83d484691d7  /etc/hosts
+1
+---s0---
+NO-S0-DIR
+---flags---
+-rw-r--r--    1 root     root             1 Jan  1 01:00 webosbrew_block_updates
+-rw-r--r--    1 root     root             1 Sep  8  2026 webosbrew_sshd_enabled
+-rw-r--r--    1 root     root             1 Sep  8  2026 webosbrew_telnet_disabled
+---procs---
+no-harness-procs
+---functional---
+
+Non-authoritative answer:
+
+::              ad.lgappstv.com
+---ssh---
+ssh-ok

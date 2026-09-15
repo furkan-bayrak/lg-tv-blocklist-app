@@ -1,0 +1,71 @@
+=== RESIDUE Fri Jan  1 01:05:21 CET 2021 uptime=322.19 ===
+---hooks---
+total 36
+drwxr-xr-x    2 root     root          4096 Jan  1 01:04 .
+drwxr-xr-x    5 root     root          4096 Jan  1 01:04 ..
+-rwxr-xr-x    1 root     root          2029 Sep 12  2026 00-block-lg-hosts
+-rwxr-xr-x    1 root     root          1657 Sep  9  2026 01-block-lan-discovery
+-rwxr-xr-x    1 root     root          6515 Sep 13  2026 02-block-dns-egress
+-rwxr-xr-x    1 root     root          2535 Sep 12  2026 03-block-lg-ip-egress
+-rwxr-xr-x    1 root     root          2013 Sep  9  2026 99-stop-services
+-rwxr-xr-x    1 root     root           280 Sep 12  2026 inputhook
+---hook-md5---
+4dfbbcf6df3c188a338e078dcf8af977  /var/lib/webosbrew/init.d/00-block-lg-hosts
+0c6e6eca1d95c2969bb72a039bbe78d3  /var/lib/webosbrew/init.d/01-block-lan-discovery
+4da8bd686424c6d2291453064bce5599  /var/lib/webosbrew/init.d/02-block-dns-egress
+50bd30dcf5e7fe22a8fd4e462d7250a0  /var/lib/webosbrew/init.d/03-block-lg-ip-egress
+11be0de91c606d14aad98963313abc52  /var/lib/webosbrew/init.d/99-stop-services
+edaaada86db7c0313f18243940a49aaf  /var/lib/webosbrew/init.d/inputhook
+---s0-dir---
+NO-S0-DIR
+---iptables---
+-P INPUT ACCEPT
+-P FORWARD ACCEPT
+-P OUTPUT ACCEPT
+-A INPUT -p tcp -m tcp --dport 18181 -j DROP
+-A INPUT -p tcp -m tcp --dport 36866 -j DROP
+-A INPUT -i wlan0 -p tcp -m tcp --dport 7000 -j DROP
+-A OUTPUT -d 156.147.69.32/32 -j DROP
+-A OUTPUT -d 224.0.0.251/32 -j DROP
+-A OUTPUT -d 239.255.255.250/32 -j DROP
+-A OUTPUT -p tcp -m tcp --dport 853 -j DROP
+-A OUTPUT -p udp -m udp --dport 853 -j DROP
+---nat---
+-P PREROUTING ACCEPT
+-P INPUT ACCEPT
+-P OUTPUT ACCEPT
+-P POSTROUTING ACCEPT
+-A OUTPUT ! -d 127.0.0.0/8 -p udp -m udp --dport 53 -j DNAT --to-destination 192.168.179.1:53
+-A OUTPUT ! -d 127.0.0.0/8 -p tcp -m tcp --dport 53 -j DNAT --to-destination 192.168.179.1:53
+---mounts---
+tmpfs /etc/hosts tmpfs rw,relatime 0 0
+---hosts-md5---
+a151aa271729756dd3fdc83d484691d7  /etc/hosts
+a151aa271729756dd3fdc83d484691d7  /tmp/hosts
+---tmp-leftovers---
+-rw-r--r--    1 root     root          2807 Jan  1 01:04 /tmp/cleanup.sh
+tmp-probe-leftovers-clean
+---flags---
+-rw-r--r--    1 root     root             1 Jan  1 01:00 webosbrew_block_updates
+-rw-r--r--    1 root     root             1 Sep  8  2026 webosbrew_sshd_enabled
+-rw-r--r--    1 root     root             1 Sep  8  2026 webosbrew_telnet_disabled
+===FUNCTIONAL===
+---nslookup-8888-snu---
+
+Non-authoritative answer:
+
+Non-authoritative answer:
+
+---02-log---
+1
+2021-01-01 01:04:59 02-block-dns-egress: OK: all DNS-egress rules verified active (dnat 53 -> 192.168.179.1, drop 853)
+---getent---
+::1             snu.lge.com su-dev.lge.com su.lge.com su-ssl.lge.com
+::              snu.lge.com su-dev.lge.com su.lge.com su-ssl.lge.com
+::              ad.lgappstv.com
+::              ads.lgtvcommon.com
+---canary-example---
+Address: 2606:4700:10::ac42:93f3
+Name:	example.com
+Address: 2606:4700:10::6814:179a
+
