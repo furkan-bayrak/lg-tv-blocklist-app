@@ -12,11 +12,11 @@
  * focus, OK/Enter activates the focused button (native button behavior).
  * No framework, no runtime dependencies (design spec §3).
  *
- * S3 T1 minimal fix: src/status.ts is now a module (schema 2, exports
- * parseStatus/TvStatus), so the parser is imported instead of read off a global.
+ * Status parsing lives in src/status.ts — like src/bridge.ts it is a plain
+ * script exposing one global (LgStatus), not a module: the TV loads the
+ * compiled JS with plain <script> tags, so CommonJS output must never appear.
+ * The TvStatus interface is shared program-wide, exactly like the Hb* types.
  */
-
-import { parseStatus, TvStatus } from './status';
 
 (function (): void {
   function el(id: string): HTMLElement {
@@ -169,7 +169,7 @@ import { parseStatus, TvStatus } from './status';
           show('Status check failed', formatExec(response));
           return;
         }
-        var block = parseStatus(raw);
+        var block = LgStatus.parse(raw);
         if (!block) {
           panel.textContent = 'Status: unreadable (malformed block) — reinstall the app.';
           show('Status block rejected', 'Raw output (never parsed outside the block):\n' + rawPreview(raw));

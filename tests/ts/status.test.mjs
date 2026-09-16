@@ -11,19 +11,19 @@ const statusJs = readFileSync(
   'utf8'
 );
 
-// Same vm harness structure as the schema-1 tests. The compiled parser is a
-// CommonJS module (src/status.ts exports), so the context carries an exports
-// object and the parser is reached through it — same shape the app importer sees.
+// Same vm harness structure as bridge.test.mjs. The compiled parser is a plain
+// script that assigns the global LgStatus (no CommonJS), so the context needs
+// no exports object — the global is read off the context exactly as a plain
+// <script> tag load would expose it on the TV.
 function loadParser() {
-  const exportsObj = {};
-  const context = { exports: exportsObj };
+  const context = {};
   vm.createContext(context);
   vm.runInContext(statusJs, context);
-  return exportsObj;
+  return context.LgStatus;
 }
 
 function parse(text) {
-  return loadParser().parseStatus(text);
+  return loadParser().parse(text);
 }
 
 const BLOCK = [
