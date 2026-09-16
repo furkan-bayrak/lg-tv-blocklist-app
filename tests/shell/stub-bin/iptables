@@ -1,0 +1,59 @@
+#!/bin/sh
+# Test stub for iptables. Logs every invocation to $TEST_LOG and keeps a fake
+# ruleset in $TEST_IPT_STATE (lines: "C <table> <chain>" / "R <table> <chain> <rule>").
+# Understood ops: -t nat, -N, -F, -X, -A, -I, -C, -D, -S. Unknown ops: logged, rc 0.
+[ -n "${TEST_LOG:-}" ] && echo "iptables $*" >> "$TEST_LOG"
+ST=${TEST_IPT_STATE:-}
+[ -n "$ST" ] || exit 0
+if [ "${1:-}" = "-t" ]; then t=$2; shift 2; else t=filter; fi
+op=${1:-}
+shift
+case "$op" in
+  -N)
+    chain=$1
+    grep -qxF "C $t $chain" "$ST" 2>/dev/null || echo "C $t $chain" >> "$ST"
+    ;;
+  -F)
+    chain=${1:-}
+    if [ -n "$chain" ]; then
+      { grep -v "^R $t $chain " "$ST" 2>/dev/null || true; } > "$ST.tmp"
+      mv "$ST.tmp" "$ST"
+    else
+      : > "$ST"
+    fi
+    ;;
+  -X)
+    chain=${1:-}
+    if [ -n "$chain" ]; then
+      { grep -v "^C $t $chain\$" "$ST" 2>/dev/null || true; } > "$ST.tmp"
+      mv "$ST.tmp" "$ST"
+    fi
+    ;;
+  -A)
+    chain=$1; shift
+    echo "R $t $chain $*" >> "$ST"
+    ;;
+  -I)
+    chain=$1; shift
+    [ "${1:-}" = "1" ] && shift
+    echo "R $t $chain $*" >> "$ST"
+    ;;
+  -C)
+    chain=$1; shift
+    grep -qxF "R $t $chain $*" "$ST" 2>/dev/null || exit 1
+    ;;
+  -D)
+    chain=$1; shift
+    grep -qxF "R $t $chain $*" "$ST" 2>/dev/null || exit 1
+    { grep -vxF "R $t $chain $*" "$ST" 2>/dev/null || true; } > "$ST.tmp"
+    mv "$ST.tmp" "$ST"
+    ;;
+  -S)
+    if [ -n "${1:-}" ]; then
+      grep -E "^(C|R) $t ${1}( |\$)" "$ST" 2>/dev/null || true
+    else
+      grep -E "^(C|R) $t " "$ST" 2>/dev/null || true
+    fi
+    ;;
+esac
+exit 0

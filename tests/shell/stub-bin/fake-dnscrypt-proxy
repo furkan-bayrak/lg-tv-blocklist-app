@@ -1,0 +1,10 @@
+#!/bin/sh
+# Test stub for dnscrypt-proxy (alive variant). Stays up until killed. Logs its
+# start, and a watcher logs "filter-killed" when the process dies (SIGKILL cannot
+# be trapped). Records its pid for sandbox cleanup. The filename matters: the app
+# checks /proc/<pid>/cmdline for "dnscrypt" (PID-reuse guard).
+[ -n "${TEST_LOG:-}" ] && echo "filter-start $$" >> "$TEST_LOG"
+[ -n "${LGTVB_STATE_DIR:-}" ] && echo "$$" >> "$LGTVB_STATE_DIR/fake-pids"
+( while kill -0 $$ 2>/dev/null; do sleep 0.1; done
+  [ -n "${TEST_LOG:-}" ] && echo "filter-killed" >> "$TEST_LOG" ) &
+while :; do sleep 60; done

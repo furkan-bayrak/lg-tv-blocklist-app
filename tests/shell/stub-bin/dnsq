@@ -1,0 +1,21 @@
+#!/bin/sh
+# Test stub for dnsq (driven via LGTVB_DNSQ). Exit code decided by environment:
+#   TEST_DNSQ_RC         fallback rc (default 0)
+#   TEST_DNSQ_NAME_RC    file of "<name-fragment> <rc>" lines — first line whose
+#                        fragment is a substring of $1 (query name) wins
+#   TEST_DNSQ_SERVER_RC  file of "<server> <rc>" lines — first line whose server
+#                        equals $2 wins; wins over the name-file when both match
+rc=${TEST_DNSQ_RC:-0}
+if [ -n "${TEST_DNSQ_NAME_RC:-}" ] && [ -f "$TEST_DNSQ_NAME_RC" ]; then
+  while read -r pat r; do
+    [ -n "$pat" ] || continue
+    case "$1" in *"$pat"*) rc=$r; break ;; esac
+  done < "$TEST_DNSQ_NAME_RC"
+fi
+if [ -n "${TEST_DNSQ_SERVER_RC:-}" ] && [ -f "$TEST_DNSQ_SERVER_RC" ]; then
+  while read -r pat r; do
+    [ -n "$pat" ] || continue
+    if [ "${2:-}" = "$pat" ]; then rc=$r; break; fi
+  done < "$TEST_DNSQ_SERVER_RC"
+fi
+exit "$rc"

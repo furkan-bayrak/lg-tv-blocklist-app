@@ -1,0 +1,10 @@
+#!/bin/sh
+# Test stub for luna-send: prints a canned connectionmanager/getStatus reply.
+# Test override: if TEST_LUNA_FILE is set and readable, print that file instead
+# (used by the T4 upstream-change case).
+if [ -n "${TEST_LUNA_FILE:-}" ] && [ -f "$TEST_LUNA_FILE" ]; then
+  cat "$TEST_LUNA_FILE"
+else
+  echo '{"returnValue":true,"dns1":"192.168.179.1","dns2":"192.168.9.1"}'
+fi
+exit 0

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Test stub for dnscrypt-proxy (instant-death variant): logs and exits 1.
+# Used to emulate a filter that cannot start (keeper restart-exhaustion case, T4).
+[ -n "${TEST_LOG:-}" ] && echo "filter-start-dead $$" >> "$TEST_LOG"
+exit 1
