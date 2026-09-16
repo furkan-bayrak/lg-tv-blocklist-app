@@ -14,6 +14,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check:es5": "node tools/check-es5.mjs",
+    "test:ts": "node --test \"tests/ts/*.test.mjs\"",
     "package": "ares-package --outdir dist --no-minify app",
     "dist": "npm run build && npm run check:es5 && npm run package"
   },
