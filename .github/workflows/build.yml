@@ -24,13 +24,22 @@ jobs:
 
       - name: Check LF line endings in shell scripts
         run: |
-          if grep -rIl $'\r' app/scripts; then
-            echo "::error::CRLF detected in app/scripts — commit with LF (see .gitattributes)"
+          if grep -rIl $'\r' app/scripts tests/shell; then
+            echo "::error::CRLF detected in app/scripts or tests/shell — commit with LF (see .gitattributes)"
             exit 1
           fi
 
       - name: Build (TypeScript -> ES5) and run the ES5 guard
         run: npm run build && npm run check:es5
+
+      - name: Shellcheck (POSIX mode) on shell glue
+        run: shellcheck -s sh -S warning app/scripts/*.sh tests/shell/*.sh tests/shell/stub-bin/*
+
+      - name: Unit tests (status parser + bridge gate)
+        run: npm run test:ts
+
+      - name: Shell tests (check.sh sandbox)
+        run: sh tests/shell/run-tests.sh
 
       - name: Package IPK
         run: npx ares-package --outdir dist --no-minify app
@@ -55,7 +64,7 @@ jobs:
       - name: Assert manifest values
         run: |
           jq -e '.id == "io.github.furkanbayrak.lgtvblocklist"
-                 and .version == "0.1.0"
+                 and .version == "0.2.0"
                  and .rootRequired == true
                  and (.ipkHash.sha256 | length == 64)' dist/app.manifest.json > /dev/null
 
