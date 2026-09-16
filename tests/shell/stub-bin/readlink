@@ -1,0 +1,3 @@
+#!/bin/sh
+# Test stub: simulates a readlink that cannot resolve anything (exit 1, no output).
+exit 1
