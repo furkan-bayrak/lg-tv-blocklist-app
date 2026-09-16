@@ -110,3 +110,15 @@ test('rejects hostile delimiter injection inside a value', () => {
   );
   assert.equal(loadParser().parse(hostile), null);
 });
+
+test('parses the real G1 capture', () => {
+  const raw = readFileSync(
+    fileURLToPath(new URL('./fixtures/real-block-g1.txt', import.meta.url)),
+    'utf8'
+  );
+  const block = loadParser().parse(raw);
+  assert.ok(block);
+  assert.equal(block.hook, 'linked');
+  assert.equal(block.scripts, 'ok');
+  assert.ok(block.ts > 0);
+});

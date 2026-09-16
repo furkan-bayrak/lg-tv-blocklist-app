@@ -1,0 +1,7 @@
+@@STATUS-BEGIN
+schema=1
+ts=1789550329
+hook=linked
+hook_target=/media/developer/apps/usr/palm/applications/io.github.furkanbayrak.lgtvblocklist/scripts/boot.sh
+scripts=ok
+@@STATUS-END
