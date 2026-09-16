@@ -1,0 +1,18 @@
+# dnscrypt-proxy 2.1.18 — app-managed config (materialized from template by apply.sh)
+listen_addresses = ['127.0.0.1:5335']
+server_names = ['app-upstream']
+ignore_system_dns = true
+netprobe_timeout = 0
+log_level = 2
+log_file = '@STATE@/filter.log'
+log_file_latest = true
+cache = true
+user_name = 'nobody'
+forwarding_rules = '@STATE@/forward-rules.txt'
+blocked_query_response = 'refused'
+[blocked_names]
+  blocked_names_file = '@STATE@/filter-input.txt'
+  log_file = '@STATE@/blocked-names.log'
+[static]
+  [static.'app-upstream']
+  stamp = 'sdns://AAAAAAAAAAAAEDE5Mi4xNjguMTc5LjE6NTM'

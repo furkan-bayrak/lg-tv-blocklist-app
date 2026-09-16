@@ -4,6 +4,8 @@ app/js/
 dist/
 dist-ci/
 *.ipk
+.cache/
+app/filter/dnscrypt-proxy
 
 # OS noise
 Thumbs.db
