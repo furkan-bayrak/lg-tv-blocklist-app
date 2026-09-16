@@ -1,6 +1,7 @@
 #!/bin/sh
-# tests/shell/run-tests.sh — sandbox tests for app/scripts/check.sh (Slice S2)
-# and app/scripts/apply.sh + rollback.sh (Slice S3, T3).
+# tests/shell/run-tests.sh — sandbox tests for app/scripts/check.sh (Slice S2),
+# app/scripts/apply.sh + rollback.sh (Slice S3, T3) and
+# app/scripts/keeper.sh + guard.sh (Slice S3, T4).
 #
 # Run from anywhere:  sh tests/shell/run-tests.sh
 # CI (ubuntu) runs this after the build step. Locally use any POSIX shell
@@ -138,17 +139,18 @@ BASE_PATH="$PATH"
 new_app_sandbox() {
   SB="$(mktemp -d)"
   mkdir -p "$SB/appdir/scripts" "$SB/appdir/filter" "$SB/hookdir" "$SB/state" "$SB/bin"
-  cp "$SCRIPTS_SRC/common.sh" "$SCRIPTS_SRC/apply.sh" "$SCRIPTS_SRC/rollback.sh" "$SB/appdir/scripts/"
+  cp "$SCRIPTS_SRC/common.sh" "$SCRIPTS_SRC/apply.sh" "$SCRIPTS_SRC/rollback.sh" "$SCRIPTS_SRC/keeper.sh" "$SCRIPTS_SRC/guard.sh" "$SB/appdir/scripts/"
   : > "$SB/appdir/scripts/boot.sh"
   cp "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template" "$FILTER_SRC/filter-input.txt" "$SB/appdir/filter/"
   cp "$STUBBIN/iptables" "$STUBBIN/luna-send" "$STUBBIN/dnsq" "$STUBBIN/fake-dnscrypt-proxy" "$STUBBIN/fake-dnscrypt-proxy-dead" "$SB/bin/"
-  chmod +x "$SB/appdir/scripts/apply.sh" "$SB/appdir/scripts/rollback.sh" "$SB/bin/iptables" "$SB/bin/luna-send" "$SB/bin/dnsq" "$SB/bin/fake-dnscrypt-proxy" "$SB/bin/fake-dnscrypt-proxy-dead"
+  chmod +x "$SB/appdir/scripts/apply.sh" "$SB/appdir/scripts/rollback.sh" "$SB/appdir/scripts/keeper.sh" "$SB/appdir/scripts/guard.sh" "$SB/bin/iptables" "$SB/bin/luna-send" "$SB/bin/dnsq" "$SB/bin/fake-dnscrypt-proxy" "$SB/bin/fake-dnscrypt-proxy-dead"
   TEST_LOG="$SB/test.log"; : > "$TEST_LOG"
   TEST_IPT_STATE="$SB/ipt.state"; : > "$TEST_IPT_STATE"
   TEST_DNSQ_NAME_RC="$SB/dnsq-name-rc"; : > "$TEST_DNSQ_NAME_RC"
   TEST_DNSQ_SERVER_RC="$SB/dnsq-server-rc"; : > "$TEST_DNSQ_SERVER_RC"
   printf 'DNAT\n' > "$SB/targets"
   DNSQ_RC=0
+  KEEPER_PID=""; GUARD_PID=""; FILTER_STUB_BIN=""; TEST_LUNA_FILE=""
 }
 
 run_app() {  # run_app <script-name>; sets OUT + RC (env-only, no args to scripts)
@@ -184,6 +186,76 @@ cleanup_app_sandbox() {
     while read -r p; do kill -9 "$p" 2>/dev/null; done < "$SB/state/fake-pids"
   fi
   rm -rf "$SB"
+}
+
+# ==================== S3 T4: keeper.sh / guard.sh helpers ====================
+run_bg() {  # run_bg <script> — background supervisor run; sets LAST_BG_PID
+  env PATH="$SB/bin:$BASE_PATH" \
+    LGTVB_STATE_DIR="$SB/state" LGTVB_HOOK_DIR="$SB/hookdir" \
+    LGTVB_DNSQ="$SB/bin/dnsq" LGTVB_FILTER_BIN="${FILTER_STUB_BIN:-$SB/bin/fake-dnscrypt-proxy}" \
+    LGTVB_TICK=1 LGTVB_GUARD_TICK=1 \
+    LGTVB_BACKOFF=1 LGTVB_UWAIT_ROUNDS=2 LGTVB_UWAIT_SLEEP=1 LGTVB_GUARD_GRACE=2 \
+    LGTVB_TARGETS_FILE="$SB/targets" \
+    TEST_LOG="$TEST_LOG" TEST_IPT_STATE="$TEST_IPT_STATE" \
+    TEST_DNSQ_NAME_RC="$TEST_DNSQ_NAME_RC" TEST_DNSQ_SERVER_RC="$TEST_DNSQ_SERVER_RC" \
+    TEST_DNSQ_RC="$DNSQ_RC" TEST_LUNA_FILE="${TEST_LUNA_FILE:-}" \
+    "$SH" "$SB/appdir/scripts/$1" >>"$SB/$1.out" 2>&1 </dev/null &
+  LAST_BG_PID=$!
+}
+
+wait_for() {  # wait_for <file> <pattern> <max 0.2s iterations>; rc 1 on timeout
+  n=0
+  while [ "$n" -lt "$3" ]; do
+    grep -q -- "$2" "$1" 2>/dev/null && return 0
+    sleep 0.2; n=$((n+1))
+  done
+  return 1
+}
+
+jrnl() { grep -q -- "$1" "$SB/state/journal.log" 2>/dev/null; }
+
+seed_rules() {  # seed_rules <upstream> — fake ruleset WITHOUT polluting TEST_LOG
+  {
+    echo "C nat LGTVBLK"
+    echo "R nat LGTVBLK ! -d $1 -p udp --dport 53 -j DNAT --to-destination 127.0.0.1:5335"
+    echo "R nat LGTVBLK ! -d $1 -p tcp --dport 53 -j DNAT --to-destination 127.0.0.1:5335"
+    echo "R nat OUTPUT -j LGTVBLK"
+    echo "C filter LGTVBLK-FILTER"
+    echo "R filter LGTVBLK-FILTER -p tcp --dport 853 -j DROP"
+    echo "R filter LGTVBLK-FILTER -p udp --dport 853 -j DROP"
+    echo "R filter OUTPUT -j LGTVBLK-FILTER"
+  } >> "$TEST_IPT_STATE"
+}
+
+start_fake_filter() {
+  LGTVB_STATE_DIR="$SB/state" TEST_LOG="$TEST_LOG" "$SB/bin/fake-dnscrypt-proxy" -config "$SB/state/dnscrypt-proxy.toml" >> "$SB/state/filter.log" 2>&1 </dev/null &
+  echo $! > "$SB/state/filter.pid"
+  sleep 0.3
+}
+
+stop_t4() {  # kill keeper FIRST (no more guard respawns), then guards, then sandbox
+  kp=$(cat "$SB/state/keeper.pid" 2>/dev/null || true)
+  [ -n "$kp" ] && kill -9 "$kp" 2>/dev/null
+  [ -n "${KEEPER_PID:-}" ] && kill -9 "$KEEPER_PID" 2>/dev/null
+  gp=$(cat "$SB/state/guard.pid" 2>/dev/null || true)
+  [ -n "$gp" ] && kill -9 "$gp" 2>/dev/null
+  [ -n "${GUARD_PID:-}" ] && kill -9 "$GUARD_PID" 2>/dev/null
+  sleep 0.3
+  gp=$(cat "$SB/state/guard.pid" 2>/dev/null || true)
+  [ -n "$gp" ] && kill -9 "$gp" 2>/dev/null
+  cleanup_app_sandbox
+}
+
+make_dead_pid() {  # spawn + reap a process so DEAD_PID is a no-longer-alive pid
+  sh -c 'exit 0' &
+  DEAD_PID=$!
+  wait "$DEAD_PID" 2>/dev/null || true
+}
+
+exit_check() {  # exit_check <name> <pid> <max 0.2s iterations> — process must be gone
+  n=0
+  while [ "$n" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do sleep 0.2; n=$((n+1)); done
+  if kill -0 "$2" 2>/dev/null; then no "$1" "still alive (pid $2)"; else ok "$1"; fi
 }
 
 # --- T3 Case 1: apply happy path ---------------------------------------------
@@ -295,6 +367,114 @@ if [ ! -s "$TEST_LOG" ]; then ok "apply lock busy: no rule changes"; else no "ap
 if [ ! -e "$SB/state/filter.pid" ]; then ok "apply lock busy: filter not started"; else no "apply lock busy: filter not started" "pid file exists"; fi
 kill -9 "$holder" 2>/dev/null
 cleanup_app_sandbox
+
+# ==================== S3 T4: keeper.sh sandbox ====================
+
+# --- T4 Case 1: keeper — unresponsive filter → fail-open, restart, recovery ---
+new_app_sandbox
+blocked="$(grep -m1 '^=' "$SB/appdir/filter/filter-input.txt" | cut -c2-)"
+printf '%s 2\n' "$blocked" > "$TEST_DNSQ_NAME_RC"
+printf '127.0.0.1 1\n' > "$TEST_DNSQ_SERVER_RC"     # side-port canary fails: filter unresponsive
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+start_fake_filter
+run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
+if wait_for "$SB/state/journal.log" 'keeper-filter-dead' 200; then ok "keeper recovery: filter declared dead"; else no "keeper recovery: filter declared dead" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if wait_for "$TEST_LOG" 'filter-killed' 100; then ok "keeper recovery: dead filter killed after fail-open"; else no "keeper recovery: dead filter killed after fail-open" "$(tail -3 "$TEST_LOG" 2>/dev/null)"; fi
+dell="$(log_line '-t nat -D OUTPUT -j LGTVBLK')"
+killl="$(log_line 'filter-killed')"
+if [ -n "$dell" ] && [ -n "$killl" ] && [ "$dell" -lt "$killl" ]; then ok "keeper recovery: rule deletes BEFORE filter kill"; else no "keeper recovery: rule deletes BEFORE filter kill" "del=$dell kill=$killl"; fi
+printf '127.0.0.1 0\n' > "$TEST_DNSQ_SERVER_RC"     # dnsq "recovers"
+if wait_for "$SB/state/journal.log" 'keeper-recovered' 200; then ok "keeper recovery: recovered after dnsq return"; else no "keeper recovery: recovered after dnsq return" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+rcount="$(grep -c 'keeper-restart n=' "$SB/state/journal.log" 2>/dev/null || true)"
+if [ -n "$rcount" ] && [ "$rcount" -ge 1 ] && [ "$rcount" -le 3 ]; then ok "keeper recovery: bounded restarts (1..3)"; else no "keeper recovery: bounded restarts (1..3)" "count=$rcount"; fi
+if chk_log '-t nat -I OUTPUT 1 -j LGTVBLK'; then ok "keeper recovery: rules re-added"; else no "keeper recovery: rules re-added" "$(tail -5 "$TEST_LOG" 2>/dev/null)"; fi
+if chk_state '^pointer=on$'; then ok "keeper recovery: pointer stays on"; else no "keeper recovery: pointer stays on" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+if [ ! -e "$SB/state/gaveup" ]; then ok "keeper recovery: no gaveup"; else no "keeper recovery: no gaveup" "gaveup exists"; fi
+stop_t4
+
+# --- T4 Case 2: keeper — terminal give-up (dnsq never recovers) ----------------
+new_app_sandbox
+FILTER_STUB_BIN="$SB/bin/fake-dnscrypt-proxy-dead"
+printf '127.0.0.1 1\n' > "$TEST_DNSQ_SERVER_RC"
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
+if wait_for "$SB/state/journal.log" 'terminal-giveup reason=restarts-exhausted' 400; then ok "keeper give-up: terminal after exhausted restarts"; else no "keeper give-up: terminal after exhausted restarts" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+rcount="$(grep -c 'keeper-restart n=' "$SB/state/journal.log" 2>/dev/null || true)"
+if [ "$rcount" = "3" ]; then ok "keeper give-up: exactly 3 restart attempts"; else no "keeper give-up: exactly 3 restart attempts" "count=$rcount"; fi
+if [ -f "$SB/state/gaveup" ]; then ok "keeper give-up: gaveup marker"; else no "keeper give-up: gaveup marker" "no marker"; fi
+if chk_state '^pointer=off$'; then ok "keeper give-up: pointer=off"; else no "keeper give-up: pointer=off" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+if chk_log '-t nat -D OUTPUT -j LGTVBLK'; then ok "keeper give-up: rules flushed"; else no "keeper give-up: rules flushed" "$(tail -3 "$TEST_LOG" 2>/dev/null)"; fi
+sleep 3
+rcount="$(grep -c 'keeper-restart n=' "$SB/state/journal.log" 2>/dev/null || true)"
+if [ "$rcount" = "3" ]; then ok "keeper give-up: stays terminal (no new restarts)"; else no "keeper give-up: stays terminal (no new restarts)" "count=$rcount"; fi
+stop_t4
+
+# --- T4 Case 3: keeper — upstream change → full filter-side re-apply -----------
+new_app_sandbox
+blocked="$(grep -m1 '^=' "$SB/appdir/filter/filter-input.txt" | cut -c2-)"
+printf '%s 2\n' "$blocked" > "$TEST_DNSQ_NAME_RC"
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+start_fake_filter
+printf '{"returnValue":true,"dns1":"192.168.5.5","dns2":"192.168.9.1"}\n' > "$SB/luna-new.json"
+TEST_LUNA_FILE="$SB/luna-new.json"
+: > "$TEST_IPT_STATE"    # foreign flush: rules vanish behind the keeper's back
+run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
+if wait_for "$SB/state/journal.log" 'keeper-upstream-changed' 200; then ok "keeper upstream change: detected"; else no "keeper upstream change: detected" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if wait_for "$SB/state/journal.log" 'keeper-rules-readd ok' 100; then ok "keeper upstream change: re-applied + verified"; else no "keeper upstream change: re-applied + verified" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if chk_state '^upstream=192.168.5.5$'; then ok "keeper upstream change: state upstream updated"; else no "keeper upstream change: state upstream updated" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+if chk_log '! -d 192.168.5.5 -p udp --dport 53 -j DNAT --to-destination 127.0.0.1:5335'; then ok "keeper upstream change: new exclusion in rules"; else no "keeper upstream change: new exclusion in rules" "$(tail -4 "$TEST_LOG" 2>/dev/null)"; fi
+stop_t4
+
+# --- T4 Case 4: guard — fires on dead keeper -----------------------------------
+new_app_sandbox
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+start_fake_filter
+make_dead_pid
+echo "$DEAD_PID" > "$SB/state/keeper.pid"
+t0="$(date +%s)"
+run_bg guard.sh; GUARD_PID=$LAST_BG_PID
+if wait_for "$SB/state/journal.log" 'guard-fired keeper-dead' 100; then
+  t1="$(date +%s)"
+  if [ $((t1 - t0)) -le 6 ]; then ok "guard fire: fires within <=2 ticks"; else no "guard fire: fires within <=2 ticks" "took $((t1 - t0))s"; fi
+else
+  no "guard fire: fires within <=2 ticks" "never fired: $(cat "$SB/state/journal.log" 2>/dev/null)"
+fi
+if wait_for "$TEST_LOG" '-t nat -D OUTPUT -j LGTVBLK' 50; then ok "guard fire: rules off"; else no "guard fire: rules off" "$(tail -3 "$TEST_LOG" 2>/dev/null)"; fi
+if wait_for "$TEST_LOG" 'filter-killed' 50; then ok "guard fire: filter killed"; else no "guard fire: filter killed" "no filter-killed"; fi
+if wait_for "$SB/state/state" '^pointer=off$' 50; then ok "guard fire: pointer=off"; else no "guard fire: pointer=off" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+exit_check "guard fire: exits after firing" "$GUARD_PID" 25
+stop_t4
+
+# --- T4 Case 5: guard — grace on missing keeper.pid ----------------------------
+new_app_sandbox
+run_bg guard.sh; GUARD_PID=$LAST_BG_PID
+sleep 1.4
+if jrnl 'guard-fired' || ! kill -0 "$GUARD_PID" 2>/dev/null; then no "guard grace: silent and alive before grace" "$(cat "$SB/state/journal.log" 2>/dev/null)"; else ok "guard grace: silent and alive before grace"; fi
+if wait_for "$SB/state/journal.log" 'guard-fired keeper-never-started' 100; then ok "guard grace: fires after grace"; else no "guard grace: fires after grace" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if wait_for "$SB/state/state" '^pointer=off$' 50; then ok "guard grace: pointer=off"; else no "guard grace: pointer=off" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+exit_check "guard grace: exits after firing" "$GUARD_PID" 25
+stop_t4
+
+# --- T4 Case 6: keeper — restarts a dead guard ---------------------------------
+new_app_sandbox
+printf 'pointer=off\n' > "$SB/state/state"
+make_dead_pid
+echo "$DEAD_PID" > "$SB/state/guard.pid"
+run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
+if wait_for "$SB/state/journal.log" 'keeper-guard-restart' 100; then ok "keeper restarts dead guard: journal"; else no "keeper restarts dead guard: journal" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+gp=""
+n=0
+while [ "$n" -lt 50 ]; do
+  gp=$(cat "$SB/state/guard.pid" 2>/dev/null || true)
+  if [ -n "$gp" ] && [ "$gp" != "$DEAD_PID" ] && kill -0 "$gp" 2>/dev/null; then break; fi
+  sleep 0.2; n=$((n+1))
+done
+if [ -n "$gp" ] && [ "$gp" != "$DEAD_PID" ] && kill -0 "$gp" 2>/dev/null; then ok "keeper restarts dead guard: new live guard"; else no "keeper restarts dead guard: new live guard" "guard.pid=$gp"; fi
+stop_t4
 
 # --- Summary -----------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

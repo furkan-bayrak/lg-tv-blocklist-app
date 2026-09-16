@@ -2,6 +2,7 @@
 # common.sh — shared helpers for the app's TV-side scripts. Sourced, never executed.
 # Busybox ash compatible (LG G1, webOS 6). Test-only overrides:
 # LGTVB_STATE_DIR, LGTVB_FILTER_BIN, LGTVB_DNSQ, LGTVB_TICK, LGTVB_GUARD_TICK,
+# LGTVB_BACKOFF, LGTVB_UWAIT_ROUNDS, LGTVB_UWAIT_SLEEP, LGTVB_GUARD_GRACE,
 # LGTVB_HOOK_DIR, LGTVB_TARGETS_FILE.
 #
 # This file is a sourced library: its variables are consumed by the scripts that
@@ -25,6 +26,11 @@ RULES_NAT=LGTVBLK
 RULES_FLT=LGTVBLK-FILTER
 TICK=${LGTVB_TICK:-5}
 GUARD_TICK=${LGTVB_GUARD_TICK:-10}
+BACKOFF=${LGTVB_BACKOFF:-4}
+UWAIT_ROUNDS=${LGTVB_UWAIT_ROUNDS:-12}
+UWAIT_SLEEP=${LGTVB_UWAIT_SLEEP:-10}
+GUARD_GRACE=${LGTVB_GUARD_GRACE:-6}
+# All knobs: numeric only, no leading zeros (busybox ash $(( )) treats 08 as octal → error).
 CAP=none
 
 log() {
