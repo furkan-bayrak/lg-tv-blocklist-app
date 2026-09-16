@@ -11,7 +11,12 @@
  * Spatial navigation is hand-rolled: the buttons form one row, arrow keys move
  * focus, OK/Enter activates the focused button (native button behavior).
  * No framework, no runtime dependencies (design spec §3).
+ *
+ * S3 T1 minimal fix: src/status.ts is now a module (schema 2, exports
+ * parseStatus/TvStatus), so the parser is imported instead of read off a global.
  */
+
+import { parseStatus, TvStatus } from './status';
 
 (function (): void {
   function el(id: string): HTMLElement {
@@ -127,7 +132,7 @@
     });
   }
 
-  function hookLine(block: LgStatusBlock): string {
+  function hookLine(block: TvStatus): string {
     var state = block.hook === 'linked' ? 'linked to our script'
       : block.hook === 'other' ? 'present but points elsewhere'
       : 'not installed';
@@ -137,11 +142,11 @@
     return 'Boot hook: ' + state;
   }
 
-  function scriptsLine(block: LgStatusBlock): string {
+  function scriptsLine(block: TvStatus): string {
     return 'Scripts: ' + (block.scripts === 'ok' ? 'present' : 'missing');
   }
 
-  function probedLine(block: LgStatusBlock): string {
+  function probedLine(block: TvStatus): string {
     if (block.ts === 0) {
       return 'Probed: TV clock is not set';
     }
@@ -164,7 +169,7 @@
           show('Status check failed', formatExec(response));
           return;
         }
-        var block = LgBlocklistStatus.parse(raw);
+        var block = parseStatus(raw);
         if (!block) {
           panel.textContent = 'Status: unreadable (malformed block) — reinstall the app.';
           show('Status block rejected', 'Raw output (never parsed outside the block):\n' + rawPreview(raw));

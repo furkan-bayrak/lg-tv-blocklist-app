@@ -1,137 +1,126 @@
-/*
- * Parser for the machine-readable status block emitted by app/scripts/*.sh
- * (design spec D13b). Everything the UI trusts lives between exactly one
- * @@STATUS-BEGIN / @@STATUS-END pair. Text outside the pair is ignored;
- * anything inside that is not an allowlisted key=value line causes the whole
- * block to be rejected — the block is never partially parsed.
+/**
+ * Strict parser for the app's @@STATUS block (schema 2).
  *
- * Schema 1 keys (all required, exactly once each):
- *   schema=1                    block format version (lockstep with the app)
- *   ts=<epoch-seconds>          when the block was produced (0 = clock not set)
- *   hook=linked|other|missing   boot-hook symlink state
- *   hook_target=<path|none>     symlink target when it is a plain path
- *   scripts=ok|missing          script files present next to the app
- *
- * The scripts and this app ship in the same IPK, so the key set is strict:
- * unknown or missing keys => reject and tell the user to reinstall.
- *
- * ES5 discipline: target ES5, no async/await/generators (tools/check-es5.mjs).
+ * Contract (lockstep with app/scripts/check.sh, same IPK):
+ *   - exactly one @@STATUS-BEGIN / @@STATUS-END pair, BEGIN first, END last
+ *   - exactly 14 keys, each exactly once: schema, ts, hook, hook_target,
+ *     scripts, filter, rule, keeper, guard, pointer, gaveup, mode, upstream, cap
+ *   - schema must be exactly '2'
+ *   - any other line, duplicate key, missing key, malformed value → REJECT
+ * Never parse un-delimited output; never guess.
  */
 
-interface LgStatusBlock {
-  schema: number;
+export interface TvStatus {
+  schema: '2';
   ts: number;
-  hook: string;
-  hookTarget: string;
-  scripts: string;
+  hook: 'linked' | 'other' | 'missing';
+  hookTarget: string; // absolute path or 'none'
+  scripts: 'ok' | 'missing';
+  filter: 'up' | 'down';
+  rule: 'on' | 'off' | 'absent';
+  keeper: 'up' | 'down';
+  guard: 'up' | 'down';
+  pointer: 'on' | 'off';
+  gaveup: 'yes' | 'no';
+  mode: 'on' | 'off' | 'degraded';
+  upstream: string; // IPv4 or 'none'
+  cap: 'none' | 'dnat' | 'unsupported';
 }
 
-interface LgStatusParser {
-  SCHEMA: number;
-  parse(text: string): LgStatusBlock | null;
+const BEGIN = '@@STATUS-BEGIN';
+const END = '@@STATUS-END';
+const KEYS = [
+  'schema', 'ts', 'hook', 'hook_target', 'scripts', 'filter', 'rule',
+  'keeper', 'guard', 'pointer', 'gaveup', 'mode', 'upstream', 'cap'
+] as const;
+type Key = (typeof KEYS)[number];
+
+const ENUMS: Record<string, readonly string[]> = {
+  hook: ['linked', 'other', 'missing'],
+  scripts: ['ok', 'missing'],
+  filter: ['up', 'down'],
+  rule: ['on', 'off', 'absent'],
+  keeper: ['up', 'down'],
+  guard: ['up', 'down'],
+  pointer: ['on', 'off'],
+  gaveup: ['yes', 'no'],
+  mode: ['on', 'off', 'degraded'],
+  cap: ['none', 'dnat', 'unsupported']
+};
+
+function isIpv4(v: string): boolean {
+  const parts = v.split('.');
+  if (parts.length !== 4) return false;
+  for (let i = 0; i < parts.length; i++) {
+    if (!/^\d{1,3}$/.test(parts[i])) return false;
+    const n = Number(parts[i]);
+    if (n < 0 || n > 255) return false;
+  }
+  return true;
 }
 
-var LgBlocklistStatus: LgStatusParser = (function (): LgStatusParser {
-  var SCHEMA = 1;
-  var BEGIN = '@@STATUS-BEGIN';
-  var END = '@@STATUS-END';
-  var MAX_BODY_BYTES = 4096;
+/** Parse strict schema-2 status text. Returns null on ANY contract violation. */
+export function parseStatus(text: string): TvStatus | null {
+  if (typeof text !== 'string') return null;
+  if (text.indexOf('\r') !== -1) return null;
+  const lines = text.split('\n');
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  if (lines.length !== KEYS.length + 2) return null;
+  if (lines[0] !== BEGIN) return null;
+  if (lines[lines.length - 1] !== END) return null;
 
-  var REQUIRED_KEYS: string[] = ['schema', 'ts', 'hook', 'hook_target', 'scripts'];
-  var HOOK_VALUES: string[] = ['linked', 'other', 'missing'];
-  var SCRIPT_VALUES: string[] = ['ok', 'missing'];
-  var PATH_PATTERN = /^[A-Za-z0-9\/._-]+$/;
-  var DIGITS_PATTERN = /^[0-9]+$/;
-  var KEY_PATTERN = /^[a-z_]+$/;
-
-  function inList(value: string, list: string[]): boolean {
-    for (var i = 0; i < list.length; i++) {
-      if (list[i] === value) {
-        return true;
-      }
-    }
-    return false;
+  const seen: Partial<Record<Key, string>> = {};
+  for (let i = 1; i < lines.length - 1; i++) {
+    const line = lines[i];
+    const eq = line.indexOf('=');
+    if (eq <= 0) return null;
+    const key = line.substring(0, eq) as Key;
+    const value = line.substring(eq + 1);
+    if (KEYS.indexOf(key) === -1) return null;
+    if (seen[key] !== undefined) return null;
+    if (value.length === 0) return null;
+    seen[key] = value;
+  }
+  for (let i = 0; i < KEYS.length; i++) {
+    if (seen[KEYS[i]] === undefined) return null;
   }
 
-  function parse(text: string): LgStatusBlock | null {
-    var beginAt = text.indexOf(BEGIN);
-    var endAt = text.indexOf(END);
-    if (beginAt === -1 || endAt === -1 || endAt < beginAt) {
-      return null;
+  const schema = seen.schema as string;
+  if (schema !== '2') return null;
+  const tsRaw = seen.ts as string;
+  if (!/^\d{1,12}$/.test(tsRaw)) return null;
+
+  const enumsValid = (() => {
+    const keyList = Object.keys(ENUMS);
+    for (let i = 0; i < keyList.length; i++) {
+      const k = keyList[i];
+      const allowed = ENUMS[k];
+      if (allowed.indexOf(seen[k as Key] as string) === -1) return false;
     }
-    // Exactly one delimiter pair: a second BEGIN anywhere (or a second END
-    // after the first) means we are looking at junk, not a block.
-    if (text.indexOf(BEGIN, beginAt + 1) !== -1) {
-      return null;
-    }
-    if (text.indexOf(END, endAt + 1) !== -1) {
-      return null;
-    }
-    var body = text.substring(beginAt + BEGIN.length, endAt);
-    if (body.length > MAX_BODY_BYTES) {
-      return null;
-    }
-    if (body.indexOf('\r') !== -1) {
-      return null;
-    }
-    if (body.charAt(0) !== '\n' || body.charAt(body.length - 1) !== '\n') {
-      return null;
-    }
-    var lines = body.substring(1, body.length - 1).split('\n');
-    var values: { [key: string]: string } = Object.create(null);
-    for (var i = 0; i < lines.length; i++) {
-      var line = lines[i];
-      var eq = line.indexOf('=');
-      if (eq <= 0 || eq === line.length - 1) {
-        return null;
-      }
-      var key = line.substring(0, eq);
-      var value = line.substring(eq + 1);
-      if (!KEY_PATTERN.test(key)) {
-        return null;
-      }
-      if (Object.prototype.hasOwnProperty.call(values, key)) {
-        return null;
-      }
-      values[key] = value;
-    }
-    for (var r = 0; r < REQUIRED_KEYS.length; r++) {
-      if (!Object.prototype.hasOwnProperty.call(values, REQUIRED_KEYS[r])) {
-        return null;
-      }
-    }
-    for (var k in values) {
-      if (!inList(k, REQUIRED_KEYS)) {
-        return null;
-      }
-    }
-    if (values['schema'] !== '1') {
-      return null;
-    }
-    if (!DIGITS_PATTERN.test(values['ts']) || values['ts'].length > 12) {
-      return null;
-    }
-    if (!inList(values['hook'], HOOK_VALUES)) {
-      return null;
-    }
-    if (values['hook_target'] !== 'none' &&
-        (values['hook_target'].length > 256 || !PATH_PATTERN.test(values['hook_target']))) {
-      return null;
-    }
-    if (!inList(values['scripts'], SCRIPT_VALUES)) {
-      return null;
-    }
-    return {
-      schema: SCHEMA,
-      ts: parseInt(values['ts'], 10),
-      hook: values['hook'],
-      hookTarget: values['hook_target'],
-      scripts: values['scripts']
-    };
-  }
+    return true;
+  })();
+  if (!enumsValid) return null;
+
+  const hookTarget = seen.hook_target as string;
+  if (hookTarget !== 'none' && hookTarget.charAt(0) !== '/') return null;
+
+  const upstream = seen.upstream as string;
+  if (upstream !== 'none' && !isIpv4(upstream)) return null;
 
   return {
-    SCHEMA: SCHEMA,
-    parse: parse
+    schema: '2',
+    ts: Number(tsRaw),
+    hook: seen.hook as TvStatus['hook'],
+    hookTarget,
+    scripts: seen.scripts as TvStatus['scripts'],
+    filter: seen.filter as TvStatus['filter'],
+    rule: seen.rule as TvStatus['rule'],
+    keeper: seen.keeper as TvStatus['keeper'],
+    guard: seen.guard as TvStatus['guard'],
+    pointer: seen.pointer as TvStatus['pointer'],
+    gaveup: seen.gaveup as TvStatus['gaveup'],
+    mode: seen.mode as TvStatus['mode'],
+    upstream,
+    cap: seen.cap as TvStatus['cap']
   };
-})();
+}
