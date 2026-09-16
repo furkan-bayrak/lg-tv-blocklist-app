@@ -1,7 +1,8 @@
 #!/bin/sh
-# tests/shell/run-tests.sh — sandbox tests for app/scripts/check.sh (Slice S2),
-# app/scripts/apply.sh + rollback.sh (Slice S3, T3) and
-# app/scripts/keeper.sh + guard.sh (Slice S3, T4).
+# tests/shell/run-tests.sh — sandbox tests for app/scripts/check.sh (Slice S2; schema 2 in S3 T5),
+# app/scripts/apply.sh + rollback.sh (Slice S3, T3),
+# app/scripts/keeper.sh + guard.sh (Slice S3, T4) and
+# app/scripts/boot.sh (Slice S3, T5).
 #
 # Run from anywhere:  sh tests/shell/run-tests.sh
 # CI (ubuntu) runs this after the build step. Locally use any POSIX shell
@@ -24,17 +25,14 @@ norm() { sed 's/^ts=[0-9][0-9]*$/ts=<TS>/'; }
 new_sandbox() {
   SB="$(mktemp -d)"
   mkdir -p "$SB/appdir/scripts" "$SB/hookdir"
-  cp "$CHECK" "$SB/appdir/scripts/check.sh"
+  cp "$CHECK" "$REPO/app/scripts/common.sh" "$SB/appdir/scripts/"
   : > "$SB/appdir/scripts/boot.sh"
   chmod +x "$SB/appdir/scripts/check.sh"
 }
 
-run_check() {  # run_check <hook_dir> [override_path]
-  if [ "$#" -ge 2 ]; then
-    env PATH="$2" LGTVB_HOOK_DIR="$1" "$SH" "$SB/appdir/scripts/check.sh" 2>"$SB/stderr"
-  else
-    LGTVB_HOOK_DIR="$1" "$SH" "$SB/appdir/scripts/check.sh" 2>"$SB/stderr"
-  fi
+run_check() {  # run_check <hook_dir> [PATH]; default PATH has no iptables (cap=unsupported)
+  p="${2:-/usr/bin:/bin}"
+  env PATH="$p" LGTVB_HOOK_DIR="$1" "$SH" "$SB/appdir/scripts/check.sh" 2>"$SB/stderr"
 }
 
 assert_block() {  # assert_block <name> <expected block>
@@ -58,11 +56,20 @@ new_sandbox
 ln -s "$SB/appdir/scripts/boot.sh" "$SB/hookdir/50-lgtv-blocklist-app"
 OUT="$(run_check "$SB/hookdir")"; RC=$?
 assert_block "happy path (hook linked)" "@@STATUS-BEGIN
-schema=1
+schema=2
 ts=<TS>
 hook=linked
 hook_target=$SB/appdir/scripts/boot.sh
 scripts=ok
+filter=down
+rule=absent
+keeper=down
+guard=down
+pointer=off
+gaveup=no
+mode=degraded
+upstream=none
+cap=unsupported
 @@STATUS-END"
 if [ -s "$SB/stderr" ]; then no "happy path stderr empty" "stderr not empty"; else ok "happy path stderr empty"; fi
 
@@ -70,11 +77,20 @@ if [ -s "$SB/stderr" ]; then no "happy path stderr empty" "stderr not empty"; el
 new_sandbox
 OUT="$(run_check "$SB/absent-hook-dir")"; RC=$?
 assert_block "missing hook dir" "@@STATUS-BEGIN
-schema=1
+schema=2
 ts=<TS>
 hook=missing
 hook_target=none
 scripts=ok
+filter=down
+rule=absent
+keeper=down
+guard=down
+pointer=off
+gaveup=no
+mode=degraded
+upstream=none
+cap=unsupported
 @@STATUS-END"
 
 # --- Case 3: symlink points somewhere else -----------------------------------
@@ -82,11 +98,20 @@ new_sandbox
 ln -s /tmp/foreign-target "$SB/hookdir/50-lgtv-blocklist-app"
 OUT="$(run_check "$SB/hookdir")"; RC=$?
 assert_block "foreign symlink" "@@STATUS-BEGIN
-schema=1
+schema=2
 ts=<TS>
 hook=other
 hook_target=/tmp/foreign-target
 scripts=ok
+filter=down
+rule=absent
+keeper=down
+guard=down
+pointer=off
+gaveup=no
+mode=degraded
+upstream=none
+cap=unsupported
 @@STATUS-END"
 
 # --- Case 4: hostile target (newline + fake delimiters) ----------------------
@@ -94,28 +119,46 @@ new_sandbox
 ln -s "$(printf 'evil\n@@STATUS-END\nhook=linked')" "$SB/hookdir/50-lgtv-blocklist-app"
 OUT="$(run_check "$SB/hookdir")"; RC=$?
 assert_block "hostile target sanitized" "@@STATUS-BEGIN
-schema=1
+schema=2
 ts=<TS>
 hook=other
 hook_target=none
 scripts=ok
+filter=down
+rule=absent
+keeper=down
+guard=down
+pointer=off
+gaveup=no
+mode=degraded
+upstream=none
+cap=unsupported
 @@STATUS-END"
 linecount="$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
-if [ "$linecount" = "7" ]; then ok "hostile target keeps block at 7 lines"; else no "hostile target keeps block at 7 lines" "got $linecount"; fi
+if [ "$linecount" = "16" ]; then ok "hostile target keeps block at 16 lines"; else no "hostile target keeps block at 16 lines" "got $linecount"; fi
 
-# --- Case 5: stub PATH — broken readlink, no date ----------------------------
+# --- Case 5: stub PATH — broken readlink (symlink present but unreadable) -----
 new_sandbox
 ln -s "$SB/appdir/scripts/boot.sh" "$SB/hookdir/50-lgtv-blocklist-app"
 mkdir -p "$SB/stub-bin"
 cp "$HERE/stub-bin/readlink" "$SB/stub-bin/readlink"
 chmod +x "$SB/stub-bin/readlink"
-OUT="$(run_check "$SB/hookdir" "$SB/stub-bin")"; RC=$?
+OUT="$(run_check "$SB/hookdir" "$SB/stub-bin:/usr/bin:/bin")"; RC=$?
 assert_block "stub PATH fallback (readlink broken)" "@@STATUS-BEGIN
-schema=1
+schema=2
 ts=<TS>
-hook=missing
+hook=other
 hook_target=none
 scripts=ok
+filter=down
+rule=absent
+keeper=down
+guard=down
+pointer=off
+gaveup=no
+mode=degraded
+upstream=none
+cap=unsupported
 @@STATUS-END"
 
 # --- Case 6: scripts missing (boot.sh removed) -------------------------------
@@ -123,11 +166,20 @@ new_sandbox
 rm "$SB/appdir/scripts/boot.sh"
 OUT="$(run_check "$SB/hookdir")"; RC=$?
 assert_block "scripts missing" "@@STATUS-BEGIN
-schema=1
+schema=2
 ts=<TS>
 hook=missing
 hook_target=none
 scripts=missing
+filter=down
+rule=absent
+keeper=down
+guard=down
+pointer=off
+gaveup=no
+mode=degraded
+upstream=none
+cap=unsupported
 @@STATUS-END"
 
 # ==================== S3 T3: apply.sh / rollback.sh sandbox ====================
@@ -139,11 +191,10 @@ BASE_PATH="$PATH"
 new_app_sandbox() {
   SB="$(mktemp -d)"
   mkdir -p "$SB/appdir/scripts" "$SB/appdir/filter" "$SB/hookdir" "$SB/state" "$SB/bin"
-  cp "$SCRIPTS_SRC/common.sh" "$SCRIPTS_SRC/apply.sh" "$SCRIPTS_SRC/rollback.sh" "$SCRIPTS_SRC/keeper.sh" "$SCRIPTS_SRC/guard.sh" "$SB/appdir/scripts/"
-  : > "$SB/appdir/scripts/boot.sh"
+  cp "$SCRIPTS_SRC/common.sh" "$SCRIPTS_SRC/apply.sh" "$SCRIPTS_SRC/rollback.sh" "$SCRIPTS_SRC/keeper.sh" "$SCRIPTS_SRC/guard.sh" "$SCRIPTS_SRC/check.sh" "$SCRIPTS_SRC/boot.sh" "$SB/appdir/scripts/"
   cp "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template" "$FILTER_SRC/filter-input.txt" "$SB/appdir/filter/"
   cp "$STUBBIN/iptables" "$STUBBIN/luna-send" "$STUBBIN/dnsq" "$STUBBIN/fake-dnscrypt-proxy" "$STUBBIN/fake-dnscrypt-proxy-dead" "$SB/bin/"
-  chmod +x "$SB/appdir/scripts/apply.sh" "$SB/appdir/scripts/rollback.sh" "$SB/appdir/scripts/keeper.sh" "$SB/appdir/scripts/guard.sh" "$SB/bin/iptables" "$SB/bin/luna-send" "$SB/bin/dnsq" "$SB/bin/fake-dnscrypt-proxy" "$SB/bin/fake-dnscrypt-proxy-dead"
+  chmod +x "$SB/appdir/scripts/apply.sh" "$SB/appdir/scripts/rollback.sh" "$SB/appdir/scripts/keeper.sh" "$SB/appdir/scripts/guard.sh" "$SB/appdir/scripts/check.sh" "$SB/appdir/scripts/boot.sh" "$SB/bin/iptables" "$SB/bin/luna-send" "$SB/bin/dnsq" "$SB/bin/fake-dnscrypt-proxy" "$SB/bin/fake-dnscrypt-proxy-dead"
   TEST_LOG="$SB/test.log"; : > "$TEST_LOG"
   TEST_IPT_STATE="$SB/ipt.state"; : > "$TEST_IPT_STATE"
   TEST_DNSQ_NAME_RC="$SB/dnsq-name-rc"; : > "$TEST_DNSQ_NAME_RC"
@@ -474,6 +525,200 @@ while [ "$n" -lt 50 ]; do
   sleep 0.2; n=$((n+1))
 done
 if [ -n "$gp" ] && [ "$gp" != "$DEAD_PID" ] && kill -0 "$gp" 2>/dev/null; then ok "keeper restarts dead guard: new live guard"; else no "keeper restarts dead guard: new live guard" "guard.pid=$gp"; fi
+stop_t4
+
+# ==================== S3 T5: boot.sh reconciler + check.sh schema 2 ====================
+
+run_check_nostub() {  # check.sh without the stub bin on PATH (no iptables → degraded)
+  OUT="$(env PATH="/usr/bin:/bin" LGTVB_STATE_DIR="$SB/state" LGTVB_HOOK_DIR="$SB/hookdir" \
+    "$SH" "$SB/appdir/scripts/check.sh" 2>"$SB/stderr")"
+  RC=$?
+}
+
+# --- T5 Case 1: check.sh — no state, no hook → honest degraded block ----------
+new_app_sandbox
+run_check_nostub
+assert_block "check schema2: no state → missing/degraded" "@@STATUS-BEGIN
+schema=2
+ts=<TS>
+hook=missing
+hook_target=none
+scripts=ok
+filter=down
+rule=absent
+keeper=down
+guard=down
+pointer=off
+gaveup=no
+mode=degraded
+upstream=none
+cap=unsupported
+@@STATUS-END"
+
+# --- T5 Case 2: check.sh — full live ON state (one pair / 14 keys / LF) -------
+new_app_sandbox
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
+blocked="$(grep -m1 '^=' "$SB/appdir/filter/filter-input.txt" | cut -c2-)"
+printf '%s 2\n' "$blocked" > "$TEST_DNSQ_NAME_RC"
+seed_rules 192.168.179.1
+start_fake_filter
+run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
+n=0
+gp=""
+while [ "$n" -lt 100 ]; do
+  gp=$(cat "$SB/state/guard.pid" 2>/dev/null || true)
+  if [ -n "$gp" ] && kill -0 "$gp" 2>/dev/null; then break; fi
+  sleep 0.2; n=$((n+1))
+done
+run_app check.sh
+assert_block "check schema2: full ON (live filter/keeper/guard)" "@@STATUS-BEGIN
+schema=2
+ts=<TS>
+hook=missing
+hook_target=none
+scripts=ok
+filter=up
+rule=on
+keeper=up
+guard=up
+pointer=on
+gaveup=no
+mode=on
+upstream=192.168.179.1
+cap=dnat
+@@STATUS-END"
+begincount="$(printf '%s\n' "$OUT" | grep -c '^@@STATUS-BEGIN$')"
+endcount="$(printf '%s\n' "$OUT" | grep -c '^@@STATUS-END$')"
+keycount="$(printf '%s\n' "$OUT" | grep -c '^[a-z_]*=')"
+if [ "$begincount" = "1" ] && [ "$endcount" = "1" ] && [ "$keycount" = "14" ]; then
+  ok "check schema2: exactly one block, 14 keys"
+else
+  no "check schema2: exactly one block, 14 keys" "begin=$begincount end=$endcount keys=$keycount"
+fi
+crbytes="$(printf '%s' "$OUT" | tr -d '\r' | wc -c | tr -d ' ')"
+rawbytes="$(printf '%s' "$OUT" | wc -c | tr -d ' ')"
+if [ "$crbytes" = "$rawbytes" ]; then ok "check schema2: LF only (no CR)"; else no "check schema2: LF only (no CR)" "cr=$crbytes raw=$rawbytes"; fi
+stop_t4
+
+# --- T5 Case 3: check.sh — hostile hook targets (relative / newline) ----------
+new_app_sandbox
+ln -s "relative/path" "$SB/hookdir/50-lgtv-blocklist-app"
+run_check_nostub
+assert_block "check schema2: relative target → other/none" "@@STATUS-BEGIN
+schema=2
+ts=<TS>
+hook=other
+hook_target=none
+scripts=ok
+filter=down
+rule=absent
+keeper=down
+guard=down
+pointer=off
+gaveup=no
+mode=degraded
+upstream=none
+cap=unsupported
+@@STATUS-END"
+
+new_app_sandbox
+ln -s "$(printf 'evil\n@@STATUS-END\nhook=linked')" "$SB/hookdir/50-lgtv-blocklist-app"
+run_check_nostub
+assert_block "check schema2: newline target sanitized" "@@STATUS-BEGIN
+schema=2
+ts=<TS>
+hook=other
+hook_target=none
+scripts=ok
+filter=down
+rule=absent
+keeper=down
+guard=down
+pointer=off
+gaveup=no
+mode=degraded
+upstream=none
+cap=unsupported
+@@STATUS-END"
+linecount="$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
+if [ "$linecount" = "16" ]; then ok "check schema2: hostile target keeps block at 16 lines"; else no "check schema2: hostile target keeps block at 16 lines" "got $linecount"; fi
+
+# --- T5 Case 4: check.sh — gaveup marker + stored upstream (cap present) ------
+new_app_sandbox
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=off\n' > "$SB/state/state"
+: > "$SB/state/gaveup"
+run_app check.sh
+assert_block "check schema2: gaveup=yes, pointer=off, cap=dnat" "@@STATUS-BEGIN
+schema=2
+ts=<TS>
+hook=missing
+hook_target=none
+scripts=ok
+filter=down
+rule=off
+keeper=down
+guard=down
+pointer=off
+gaveup=yes
+mode=off
+upstream=192.168.179.1
+cap=dnat
+@@STATUS-END"
+
+# --- T5 Case 5: boot.sh — fast, non-blocking reconciler (stale state, re-arm) --
+new_app_sandbox
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
+blocked="$(grep -m1 '^=' "$SB/appdir/filter/filter-input.txt" | cut -c2-)"
+printf '%s 2\n' "$blocked" > "$TEST_DNSQ_NAME_RC"
+seed_rules 192.168.179.1
+make_dead_pid; KDEAD=$DEAD_PID; echo "$KDEAD" > "$SB/state/keeper.pid"
+make_dead_pid; GDEAD=$DEAD_PID; echo "$GDEAD" > "$SB/state/guard.pid"
+make_dead_pid; echo "$DEAD_PID" > "$SB/state/filter.pid"
+mkdir -p "$SB/state/lock"; echo "$GDEAD" > "$SB/state/lock/pid"
+KEEPER_PID=""; GUARD_PID=""
+t0="$(date +%s)"
+env PATH="$SB/bin:$BASE_PATH" LGTVB_STATE_DIR="$SB/state" LGTVB_HOOK_DIR="$SB/hookdir" \
+  LGTVB_DNSQ="$SB/bin/dnsq" LGTVB_FILTER_BIN="$SB/bin/fake-dnscrypt-proxy" \
+  LGTVB_TICK=1 LGTVB_GUARD_TICK=1 LGTVB_BACKOFF=1 LGTVB_UWAIT_ROUNDS=1 LGTVB_UWAIT_SLEEP=1 \
+  LGTVB_GUARD_GRACE=2 LGTVB_TARGETS_FILE="$SB/targets" \
+  TEST_LOG="$TEST_LOG" TEST_IPT_STATE="$TEST_IPT_STATE" \
+  TEST_DNSQ_NAME_RC="$TEST_DNSQ_NAME_RC" TEST_DNSQ_SERVER_RC="$TEST_DNSQ_SERVER_RC" \
+  TEST_DNSQ_RC=0 \
+  "$SH" "$SB/appdir/scripts/boot.sh" >>"$SB/boot.out" 2>&1 &
+BPID=$!
+n=0
+while [ "$n" -lt 50 ] && kill -0 "$BPID" 2>/dev/null; do sleep 0.2; n=$((n+1)); done
+t1="$(date +%s)"
+if kill -0 "$BPID" 2>/dev/null; then
+  kill -9 "$BPID" 2>/dev/null
+  no "boot: returns fast (no synchronous wait)" "still running after 10s"
+else
+  ok "boot: returns fast (no synchronous wait)"
+fi
+# Second-granularity on purpose: the hard bound is the 10s poll above; this
+# asserts the common case (boot.sh only forks and exits).
+if [ $((t1 - t0)) -le 2 ]; then ok "boot: wall time <= 2s"; else no "boot: wall time <= 2s" "took $((t1 - t0))s"; fi
+if jrnl 'boot-start pid='; then ok "boot: journal boot-start"; else no "boot: journal boot-start" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if jrnl 'boot pointer=on' && jrnl 'boot-supervisors-started'; then ok "boot: journal pointer + supervisors"; else no "boot: journal pointer + supervisors" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+n=0
+kp=""
+while [ "$n" -lt 100 ]; do
+  kp=$(cat "$SB/state/keeper.pid" 2>/dev/null || true)
+  if [ -n "$kp" ] && [ "$kp" != "$KDEAD" ] && kill -0 "$kp" 2>/dev/null; then break; fi
+  sleep 0.2; n=$((n+1))
+done
+if [ -n "$kp" ] && [ "$kp" != "$KDEAD" ] && kill -0 "$kp" 2>/dev/null; then ok "boot: stale keeper.pid cleared, keeper live"; else no "boot: stale keeper.pid cleared, keeper live" "keeper.pid=$kp"; fi
+n=0
+gp=""
+while [ "$n" -lt 100 ]; do
+  gp=$(cat "$SB/state/guard.pid" 2>/dev/null || true)
+  if [ -n "$gp" ] && [ "$gp" != "$GDEAD" ] && kill -0 "$gp" 2>/dev/null; then break; fi
+  sleep 0.2; n=$((n+1))
+done
+if [ -n "$gp" ] && [ "$gp" != "$GDEAD" ] && kill -0 "$gp" 2>/dev/null; then ok "boot: guard live as well"; else no "boot: guard live as well" "guard.pid=$gp"; fi
+if chk_state '^pointer=on$' && chk_state '^upstream=192.168.179.1$'; then ok "boot: state intact (pointer+upstream)"; else no "boot: state intact (pointer+upstream)" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+if [ ! -d "$SB/state/lock" ]; then ok "boot: stale lock cleared"; else no "boot: stale lock cleared" "lock dir exists"; fi
+if wait_for "$SB/state/journal.log" 'keeper-recovered' 100; then ok "boot: pointer=on → keeper re-arms (recovered)"; else no "boot: pointer=on → keeper re-arms (recovered)" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
 stop_t4
 
 # --- Summary -----------------------------------------------------------------

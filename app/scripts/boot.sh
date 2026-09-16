@@ -1,27 +1,22 @@
 #!/bin/sh
-# LG TV Blocklist App — startup hook (Slice S1 skeleton).
-#
-# This file is reached through a symlink at:
-#   /var/lib/webosbrew/init.d/50-lgtv-blocklist-app
-# It must stay small and must never block TV startup (design spec §3 "Boot").
-# S1 scope: prove the hook runs and lands in the app log. Apply/verify logic
-# arrives in S3/S4.
-#
-# webosbrew rules honored here:
-#  - the app symlinks this script; it is never copied into init.d
-#  - everything goes to a log under /var/lib/webosbrew, then the script exits 0
+# boot.sh — boot hook (50-lgtv-blocklist-app). Cleans stale runtime state and launches the
+# supervisors detached. NEVER blocks or fails TV startup. If pointer=on, keeper re-arms in the
+# background (bounded wait-for-upstream → restart → verify → rules on).
+SELF=$(readlink -f "$0" 2>/dev/null); [ -n "$SELF" ] || SELF="$0"
+SELF_DIR=${SELF%/*}
+. "$SELF_DIR/common.sh"
 
-exec >>/var/lib/webosbrew/lgtvblocklist-app.log 2>&1
+ensure_state
+log "boot-start pid=$$"
+# reboot wiped all processes: clear stale runtime files (NOT state/intent)
+rm -f "$STATE/keeper.pid" "$STATE/guard.pid" "$STATE/filter.pid"
+rm -rf "$STATE/lock"
+pointer=$(state_get pointer)
+[ -n "$pointer" ] || pointer=off
+log "boot pointer=$pointer"
 
-printf '%s boot hook ran (S1 skeleton)\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+keeper_running || { "$SELF_DIR/keeper.sh" >>"$STATE/keeper.log" 2>&1 </dev/null & }
+guard_running  || { "$SELF_DIR/guard.sh"  >>"$STATE/guard.log"  2>&1 </dev/null & }
 
-# Resolve our own path through the symlink so later slices can find sibling
-# files next to the real script (webosbrew startup-script guide).
-SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-APP_DIR="$(dirname "$(dirname "$SELF")")"
-
-if [ ! -d "$APP_DIR" ]; then
-  printf 'resolved app dir missing: %s\n' "$APP_DIR"
-fi
-
+log "boot-supervisors-started"
 exit 0
