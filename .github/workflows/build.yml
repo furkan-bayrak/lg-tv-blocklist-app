@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -22,10 +26,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Check LF line endings in shell scripts
+      - name: Check LF line endings in shell scripts and filter assets
         run: |
-          if grep -rIl $'\r' app/scripts tests/shell; then
-            echo "::error::CRLF detected in app/scripts or tests/shell — commit with LF (see .gitattributes)"
+          if grep -rIl $'\r' app/scripts tests/shell app/filter; then
+            echo "::error::CRLF detected in app/scripts, tests/shell or app/filter — commit with LF (see .gitattributes)"
             exit 1
           fi
 
@@ -41,8 +45,50 @@ jobs:
       - name: Shell tests (check.sh sandbox)
         run: sh tests/shell/run-tests.sh
 
+      - name: Fetch + verify filter binary (pinned sha256)
+        run: node tools/fetch-filter.mjs
+
       - name: Package IPK
         run: npx ares-package --outdir dist --no-minify app
+
+      - name: Assert IPK contents (pinned filter binary + runtime scripts present)
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          ar p dist/*.ipk data.tar.gz | tar -xzf - -C "$tmp"
+          appdir="usr/palm/applications/io.github.furkanbayrak.lgtvblocklist"
+          for f in \
+            filter/dnscrypt-proxy \
+            filter/filter-input.txt \
+            filter/dnscrypt-proxy.toml.template \
+            filter/forward-rules.txt.template \
+            filter/LICENSE.dnscrypt-proxy.txt \
+            scripts/common.sh \
+            scripts/keeper.sh \
+            scripts/guard.sh \
+            scripts/apply.sh \
+            scripts/rollback.sh; do
+            if [ ! -f "$tmp/$appdir/$f" ]; then
+              echo "::error::missing in IPK: $appdir/$f"
+              exit 1
+            fi
+          done
+          # The binary must survive packaging byte-for-byte (pin lives in tools/fetch-filter.mjs).
+          pin="$(node -e "const s=require('node:fs').readFileSync('tools/fetch-filter.mjs','utf8');const m=s.match(/const BIN_SHA256 = '([0-9a-f]{64})'/);if(!m)process.exit(1);console.log(m[1])")"
+          got="$(sha256sum "$tmp/$appdir/filter/dnscrypt-proxy" | cut -d' ' -f1)"
+          if [ "$got" != "$pin" ]; then
+            echo "::error::IPK filter binary sha256 $got != pin $pin"
+            exit 1
+          fi
+          # ares-package normalizes all modes to 666 (verified 2026-09-22), so the
+          # package can never carry the exec bit. The runtime mitigation lives in
+          # common.sh (`chmod +x "$FILTER_BIN"` before every filter start) — assert
+          # the packaged copy still has it.
+          if ! grep -q 'chmod +x "$FILTER_BIN"' "$tmp/$appdir/scripts/common.sh"; then
+            echo "::error::packaged common.sh lost the chmod +x filter mitigation"
+            exit 1
+          fi
+          echo "IPK contents OK — filter binary sha256 $got (byte-identical to pin), runtime scripts present"
 
       - name: Install webosbrew toolbox (gen-manifest, ipk-verify, firmware data)
         run: |
@@ -64,7 +110,7 @@ jobs:
       - name: Assert manifest values
         run: |
           jq -e '.id == "io.github.furkanbayrak.lgtvblocklist"
-                 and .version == "0.2.0"
+                 and .version == "0.3.0"
                  and .rootRequired == true
                  and (.ipkHash.sha256 | length == 64)' dist/app.manifest.json > /dev/null
 

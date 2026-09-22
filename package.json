@@ -1,6 +1,6 @@
 {
   "name": "lg-tv-blocklist-app",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Companion app to lg-tv-blocklist: one-switch DNS blocking for rooted LG webOS TVs, installed via the Homebrew Channel.",
   "license": "MIT",
