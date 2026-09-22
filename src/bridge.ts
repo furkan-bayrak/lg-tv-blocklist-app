@@ -1,11 +1,13 @@
 /*
  * Bridge to the Homebrew Channel Luna service (org.webosbrew.hbchannel.service).
  *
- * S2 scope: fixed-command discipline is now ENFORCED — the only way to use the
+ * Fixed-command discipline (S2, extended in S3): the only way to use the
  * bridge is through the named wrappers below; there is no public generic exec().
  * Adding privileged behavior means adding a new constant + wrapper here, which
  * gets reviewed (design spec D13a: no user input, no downloaded content, no
- * eval, no sourcing — ever).
+ * eval, no sourcing — ever). The S3 protection wrappers take no parameters:
+ * the command strings are constants, so nothing user- or file-supplied can
+ * ever flow into a command.
  *
  * Status contract (D13b): scripts emit one machine-readable block delimited by
  * @@STATUS-BEGIN/@@STATUS-END (parsed by src/status.ts). The UI never parses
@@ -74,6 +76,8 @@ interface LgBlocklistBridgeApi {
   removeHook(onDone: (response: HbExecResponse) => void): void;
   readHookState(onDone: (response: HbExecResponse) => void): void;
   runCheck(onDone: (response: HbExecResponse) => void): void;
+  runApply(onDone: (response: HbExecResponse) => void): void;
+  runRollback(onDone: (response: HbExecResponse) => void): void;
 }
 
 var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi {
@@ -94,6 +98,11 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
   // Runs the live status probe (app/scripts/check.sh); block parsing happens in
   // src/status.ts, never here.
   var CMD_CHECK = 'sh ' + APP_DIR + '/scripts/check.sh';
+  // S3 protection control: ordered fail-open apply / rules-first rollback. No
+  // arguments, no variable content — the exact strings are pinned by
+  // tests/ts/bridge.test.mjs.
+  var CMD_APPLY = 'sh ' + APP_DIR + '/scripts/apply.sh';
+  var CMD_ROLLBACK = 'sh ' + APP_DIR + '/scripts/rollback.sh';
 
   function getRequestTarget(): WebOSRequestTarget | null {
     if (typeof webOS === 'undefined' || !webOS) {
@@ -197,6 +206,14 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
     exec(CMD_CHECK, onDone);
   }
 
+  function runApply(onDone: (response: HbExecResponse) => void): void {
+    exec(CMD_APPLY, onDone);
+  }
+
+  function runRollback(onDone: (response: HbExecResponse) => void): void {
+    exec(CMD_ROLLBACK, onDone);
+  }
+
   return {
     available: available,
     diagnose: diagnose,
@@ -205,6 +222,8 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
     registerHook: registerHook,
     removeHook: removeHook,
     readHookState: readHookState,
-    runCheck: runCheck
+    runCheck: runCheck,
+    runApply: runApply,
+    runRollback: runRollback
   };
 })();

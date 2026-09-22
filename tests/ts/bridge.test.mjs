@@ -45,7 +45,10 @@ test('public API is exactly the fixed wrapper set — no generic exec', () => {
   const { bridge } = loadBridge();
   assert.deepEqual(
     Object.keys(bridge).sort(),
-    ['available', 'diagnose', 'getConfiguration', 'libVersion', 'readHookState', 'registerHook', 'removeHook', 'runCheck'].sort()
+    [
+      'available', 'diagnose', 'getConfiguration', 'libVersion', 'readHookState',
+      'registerHook', 'removeHook', 'runCheck', 'runApply', 'runRollback'
+    ].sort()
   );
   assert.equal(bridge.exec, undefined);
   assert.equal(bridge.runFixedCommand, undefined);
@@ -80,11 +83,31 @@ test('every fixed command stays inside the conservative character set', () => {
   bridge.removeHook(noop);
   bridge.readHookState(noop);
   bridge.runCheck(noop);
+  bridge.runApply(noop);
+  bridge.runRollback(noop);
   // `+` is required by the reviewed register command (`chmod +x`).
   const allowed = /^[A-Za-z0-9 \/._&+-]+$/;
   for (const call of calls) {
     assert.match(call.parameters.command, allowed);
   }
+});
+
+test('runApply sends exactly the fixed apply.sh command', () => {
+  const { bridge, calls } = loadBridge();
+  bridge.runApply(() => {});
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].uri, 'luna://org.webosbrew.hbchannel.service');
+  assert.equal(calls[0].method, 'exec');
+  assert.equal(calls[0].parameters.command, 'sh ' + APP_DIR + '/scripts/apply.sh');
+});
+
+test('runRollback sends exactly the fixed rollback.sh command', () => {
+  const { bridge, calls } = loadBridge();
+  bridge.runRollback(() => {});
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].uri, 'luna://org.webosbrew.hbchannel.service');
+  assert.equal(calls[0].method, 'exec');
+  assert.equal(calls[0].parameters.command, 'sh ' + APP_DIR + '/scripts/rollback.sh');
 });
 
 test('getConfiguration goes through the same service without a command', () => {

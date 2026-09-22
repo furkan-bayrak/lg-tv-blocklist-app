@@ -7,6 +7,13 @@
 </head>
 <body>
   <h1>LG TV Blocklist</h1>
+  <!-- Primary control: one big action area. Its state (on/off/attention/degraded)
+       is rendered ONLY from the live-probed @@STATUS block by js/main.js. -->
+  <section id="protection" class="protection is-unknown">
+    <div id="prot-headline" class="prot-headline">Checking protection…</div>
+    <div id="prot-text" class="prot-text">Reading the current state from the TV.</div>
+    <button id="btn-protect" class="prot-button" disabled>Please wait…</button>
+  </section>
   <p id="status">Starting…</p>
   <div id="panel">Status: not checked yet.</div>
   <div class="buttons">
