@@ -50,9 +50,17 @@ state_get() {  # fixed-key lookup: the key is a literal prefix, never a regex
   done 2>/dev/null < "$STATE/state"
   return 1
 }
-state_set() {
+state_set() {  # same literal-key discipline as state_get: the key is never a regex/glob
   f="$STATE/state"; tmp="$STATE/state.tmp"
-  if [ -f "$f" ]; then grep -v "^$1=" "$f" > "$tmp"; else : > "$tmp"; fi
+  : > "$tmp"
+  if [ -f "$f" ]; then
+    while IFS= read -r line; do
+      case $line in
+        "$1="*) ;;                       # drop only the exact literal key
+        *) printf '%s\n' "$line" >> "$tmp" ;;
+      esac
+    done 2>/dev/null < "$f"
+  fi
   echo "$1=$2" >> "$tmp"
   mv -f "$tmp" "$f"
   chmod 600 "$f" 2>/dev/null
@@ -71,7 +79,15 @@ lock_acquire() {
   while [ "$n" -lt 10 ]; do
     if mkdir "$STATE/lock" 2>/dev/null; then echo $$ > "$STATE/lock/pid"; return 0; fi
     lpid=$(cat "$STATE/lock/pid" 2>/dev/null)
-    if pid_alive "$lpid" ""; then sleep 1; n=$((n+1)); else rm -rf "$STATE/lock"; fi
+    if [ -z "$lpid" ]; then
+      # No pid yet: mkdir→pid-write is not atomic, so an empty pid must be
+      # treated like a live holder (same rule as lock_live) — never steal.
+      sleep 1; n=$((n+1))
+    elif pid_alive "$lpid" ""; then
+      sleep 1; n=$((n+1))
+    else
+      rm -rf "$STATE/lock"               # recorded pid is dead → stale lock
+    fi
   done
   return 1
 }
@@ -201,7 +217,7 @@ materialize_config() {
   cp -f "$FILTER_INPUT_SRC" "$STATE/filter-input.txt" || return 1
   # Template drift (token removed/renamed) would leave @STAMP@ in the config and
   # the filter would never start; fail here with a clear reason (callers fail open).
-  if grep -q '@STAMP@' "$STATE/dnscrypt-proxy.toml" 2>/dev/null; then
+  if grep -qF -e '@STAMP@' "$STATE/dnscrypt-proxy.toml" 2>/dev/null; then
     log "materialize-fail reason=stamp-token"
     return 1
   fi

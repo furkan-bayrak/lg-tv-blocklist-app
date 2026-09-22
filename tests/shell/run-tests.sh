@@ -304,6 +304,7 @@ new_app_sandbox() {
     '. "$SELF_DIR/common.sh"' \
     'case ${1:-} in' \
     '  state_get) shift; state_get "$1"; echo "rc=$?" ;;' \
+    '  state_set) shift; state_set "$1" "$2"; echo "rc=$?" ;;' \
     '  cmdline_has) shift; cmdline_has "$1" "$2"; echo "rc=$?" ;;' \
     '  materialize) shift; materialize_config "$1"; echo "rc=$?" ;;' \
     '  stamp) shift; s=$(dns_stamp_upstream "$1"); rc=$?; printf "%s\nrc=%s\n" "$s" "$rc" ;;' \
@@ -858,6 +859,7 @@ stop_t4
 # Fix 2: keeper stale-lock recovery, live-lock skip, apply signal trap.
 # Fix 4: checked materialize (upstream-change + restart paths).
 # Fix 7: fixed-key state_get / literal cmdline_has.
+# Residuals (scoped re-review): literal state_set keys, empty-pid lock not stolen.
 
 probe_run() {  # probe_run <helper> [args...] — call a common.sh helper via probe.sh
   env PATH="$SB/bin:$BASE_PATH" LGTVB_STATE_DIR="$SB/state" LGTVB_HOOK_DIR="$SB/hookdir" \
@@ -984,6 +986,33 @@ if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=1" ]; then ok "cmdline_has: m
 OUT="$(probe_run cmdline_has "$dpid" 'sleep 30.5')"
 if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ]; then ok "cmdline_has: exact substring matches"; else no "cmdline_has: exact substring matches" "got [$OUT]"; fi
 kill -9 "$dpid" 2>/dev/null
+cleanup_app_sandbox
+
+# --- residual: state_set writes keys literally (no regex/glob corruption) -----
+new_app_sandbox
+printf 'upXstream=WRONG\nup.stream=RIGHT\nother=KEEP\n' > "$SB/state/state"
+OUT="$(probe_run state_set 'up.stream' NEW)"
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ]; then ok "state_set: metachar key write rc=0"; else no "state_set: metachar key write rc=0" "got [$OUT]"; fi
+if grep -qxF 'upXstream=WRONG' "$SB/state/state"; then ok "state_set: sibling key survives (dot key)"; else no "state_set: sibling key survives (dot key)" "$(cat "$SB/state/state")"; fi
+if [ "$(grep -c '^up\.stream=' "$SB/state/state")" = "1" ] && grep -qxF 'up.stream=NEW' "$SB/state/state"; then ok "state_set: exact key replaced once"; else no "state_set: exact key replaced once" "$(cat "$SB/state/state")"; fi
+if grep -qxF 'other=KEEP' "$SB/state/state"; then ok "state_set: unrelated key survives"; else no "state_set: unrelated key survives" "$(cat "$SB/state/state")"; fi
+printf 'x=KEEP\nx*=OLD\n' > "$SB/state/state"    # glob metachar in the key
+OUT="$(probe_run state_set 'x*' NEW)"
+if grep -qxF 'x=KEEP' "$SB/state/state" && [ "$(grep -c '^x\*=' "$SB/state/state")" = "1" ] && grep -qxF 'x*=NEW' "$SB/state/state"; then ok "state_set: glob metachar key cannot corrupt other keys"; else no "state_set: glob metachar key cannot corrupt other keys" "$(cat "$SB/state/state")"; fi
+cleanup_app_sandbox
+
+# --- residual: empty-pid lock is treated as live (not stolen) ------------------
+new_app_sandbox
+mkdir -p "$SB/state/lock"                        # no pid file: crash mid-write
+t0="$(date +%s)"
+run_app apply.sh
+t1="$(date +%s)"
+assert_result "apply empty-pid lock: fail/locked" fail locked
+if [ -d "$SB/state/lock" ]; then ok "apply empty-pid lock: not stolen (lock intact)"; else no "apply empty-pid lock: not stolen (lock intact)" "lock dir removed"; fi
+if [ ! -s "$SB/state/lock/pid" ]; then ok "apply empty-pid lock: no pid planted"; else no "apply empty-pid lock: no pid planted" "pid=$(cat "$SB/state/lock/pid" 2>/dev/null)"; fi
+if [ ! -s "$TEST_LOG" ]; then ok "apply empty-pid lock: no rule changes"; else no "apply empty-pid lock: no rule changes" "$(head -3 "$TEST_LOG")"; fi
+# Same bound as the live-holder case: 10 lock iterations x sleep 1.
+if [ $((t1 - t0)) -le 20 ]; then ok "apply empty-pid lock: bounded wait (<=20s)"; else no "apply empty-pid lock: bounded wait (<=20s)" "took $((t1 - t0))s"; fi
 cleanup_app_sandbox
 
 # --- Summary -----------------------------------------------------------------
