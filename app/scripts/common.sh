@@ -42,7 +42,14 @@ log() {
   fi
 }
 
-state_get() { grep "^$1=" "$STATE/state" 2>/dev/null | head -n1 | cut -d= -f2-; }
+state_get() {  # fixed-key lookup: the key is a literal prefix, never a regex
+  while IFS= read -r line; do
+    case $line in
+      "$1="*) printf '%s\n' "${line#"$1="}"; return 0 ;;
+    esac
+  done 2>/dev/null < "$STATE/state"
+  return 1
+}
 state_set() {
   f="$STATE/state"; tmp="$STATE/state.tmp"
   if [ -f "$f" ]; then grep -v "^$1=" "$f" > "$tmp"; else : > "$tmp"; fi
@@ -51,7 +58,7 @@ state_set() {
   chmod 600 "$f" 2>/dev/null
 }
 
-cmdline_has() { tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -q "$2"; }
+cmdline_has() { tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -qF -e "$2"; }
 pid_alive() {  # $1 pid, $2 optional cmdline substring (PID-reuse guard)
   [ -n "$1" ] || return 1
   kill -0 "$1" 2>/dev/null || return 1
@@ -69,6 +76,20 @@ lock_acquire() {
   return 1
 }
 lock_release() { rm -rf "$STATE/lock"; }
+
+lock_live() {  # rc 0 = lock present and held (skip); stale lock (dead pid) → cleared, rc 1.
+  # A lock whose recorded pid is DEAD is stale → cleared here (a killed apply must
+  # not wedge the keeper until reboot). A lock with no/unreadable pid is treated
+  # as LIVE: mkdir→pid-write is not atomic, so "no pid yet" must not be mistaken
+  # for stale (boot.sh clears any leftover lock after a reboot).
+  [ -d "$STATE/lock" ] || return 1
+  lpid=$(cat "$STATE/lock/pid" 2>/dev/null)
+  if [ -n "$lpid" ] && ! pid_alive "$lpid" ""; then
+    rm -rf "$STATE/lock"
+    return 1
+  fi
+  return 0
+}
 
 ensure_state() {
   mkdir -p "$STATE" 2>/dev/null
@@ -121,11 +142,69 @@ canary_blocked() {  # system path (through DNAT); expect rcode!=0 (REFUSED) → 
   [ "$rc" -eq 2 ]
 }
 
+# --- upstream stamp: dnscrypt-proxy [static] entry for the runtime upstream ---
+# dnscrypt-proxy requires a stamp for its [static] server even though
+# forwarding_rules route every query to the learned upstream; a hardcoded stamp
+# would bake one network's private IP into the shipped template. Plain-DNS stamp
+# bytes: 0x00 (plain DNS) | props (8x 0x00) | len(addr) | addr, base64url, no
+# padding. The 9 leading zero bytes are a multiple of 3, so they always encode
+# to the fixed 'AAAAAAAAAAAA' prefix and only the length-prefixed address needs
+# encoding. Pure POSIX shell: node and base64(1) are not POSIX tools.
+B64URL=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_
+b64char() { printf '%s' "$B64URL" | cut -c $(($1 + 1)); }
+
+dns_stamp_upstream() {  # $1 IPv4 → plain-DNS stamp for <ip>:53; rc 1 on invalid input
+  is_ipv4 "$1" || return 1
+  addr="$1:53"
+  set -- "${#addr}"                       # byte 0: LP length
+  rest="$addr"
+  while [ -n "$rest" ]; do                # then the ASCII address bytes
+    c=$(printf '%.1s' "$rest")
+    case $c in
+      0) v=48 ;; 1) v=49 ;; 2) v=50 ;; 3) v=51 ;; 4) v=52 ;;
+      5) v=53 ;; 6) v=54 ;; 7) v=55 ;; 8) v=56 ;; 9) v=57 ;;
+      .) v=46 ;; :) v=58 ;;
+      *) return 1 ;;
+    esac
+    set -- "$@" "$v"
+    rest=${rest#?}
+  done
+  out=""
+  while [ $# -gt 0 ]; do                  # base64url: 3 bytes → 4 chars, no padding
+    if [ $# -ge 3 ]; then
+      b1=$1; b2=$2; b3=$3; shift 3
+      out="$out$(b64char $((b1 >> 2)))$(b64char $((((b1 & 3) << 4) | (b2 >> 4))))$(b64char $((((b2 & 15) << 2) | (b3 >> 6))))$(b64char $((b3 & 63)))"
+    elif [ $# -eq 2 ]; then
+      b1=$1; b2=$2; shift 2
+      out="$out$(b64char $((b1 >> 2)))$(b64char $((((b1 & 3) << 4) | (b2 >> 4))))$(b64char $(((b2 & 15) << 2)))"
+    else
+      b1=$1; shift
+      out="$out$(b64char $((b1 >> 2)))$(b64char $(((b1 & 3) << 4)))"
+    fi
+  done
+  printf 'sdns://AAAAAAAAAAAA%s' "$out"
+}
+
 materialize_config() {
   up=$1
-  sed "s|@STATE@|$STATE|g; s|@UPSTREAM@|$up|g" "$FILTER_TOML_TMPL" > "$STATE/dnscrypt-proxy.toml" || return 1
+  if [ -z "$up" ] || ! is_ipv4 "$up"; then
+    log "materialize-fail reason=no-upstream"
+    return 1
+  fi
+  stamp=$(dns_stamp_upstream "$up")
+  if [ -z "$stamp" ]; then
+    log "materialize-fail reason=stamp"
+    return 1
+  fi
+  sed "s|@STATE@|$STATE|g; s|@STAMP@|$stamp|g" "$FILTER_TOML_TMPL" > "$STATE/dnscrypt-proxy.toml" || return 1
   sed "s|@UPSTREAM@|$up|g" "$FORWARD_TMPL" > "$STATE/forward-rules.txt" || return 1
   cp -f "$FILTER_INPUT_SRC" "$STATE/filter-input.txt" || return 1
+  # Template drift (token removed/renamed) would leave @STAMP@ in the config and
+  # the filter would never start; fail here with a clear reason (callers fail open).
+  if grep -q '@STAMP@' "$STATE/dnscrypt-proxy.toml" 2>/dev/null; then
+    log "materialize-fail reason=stamp-token"
+    return 1
+  fi
   chmod 600 "$STATE/dnscrypt-proxy.toml" "$STATE/forward-rules.txt" "$STATE/filter-input.txt" 2>/dev/null
   chmod +x "$FILTER_BIN" 2>/dev/null
   return 0
@@ -190,7 +269,10 @@ rules_present() {  # $1 upstream — all -C checks must pass
 fail_open_terminal() {  # $1 = reason; terminal give-up: protection OFF, TV works
   rules_off
   filter_kill
-  state_set pointer off
+  # Marker BEFORE pointer=off: any reader that sees the off state also sees the
+  # attention flag (check.sh reads the two independently; no window with
+  # pointer=off + gaveup=no). apply.sh clears it after pointer=on.
   : > "$STATE/gaveup"
+  state_set pointer off
   log "terminal-giveup reason=$1"
 }

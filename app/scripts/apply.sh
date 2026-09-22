@@ -10,6 +10,11 @@ SELF_DIR=${SELF%/*}
 ensure_state
 if ! lock_acquire; then echo "RESULT=fail"; echo "reason=locked"; exit 0; fi
 
+# Release the lock on every exit path and on signals: a killed apply must not
+# wedge the keeper (keeper also clears stale locks; kill -9 cannot be trapped).
+trap 'lock_release' EXIT
+trap 'lock_release; exit 130' INT TERM HUP
+
 cap_probe
 if [ "$CAP" != "dnat" ]; then
   log "apply-degraded cap=$CAP"

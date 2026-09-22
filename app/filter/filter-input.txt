@@ -1,7 +1,6 @@
 # lg-tv-blocklist-app filter input — GENERATED, DO NOT EDIT
 # generator: tools/build-filter-input.mjs
 # source: lg-tv-blocklist @ 99c9ab467e4780fcb7a1220a78f40d38acb26d87
-# generated: 2026-09-16T11:29:35.388Z
 =a.lgappstv.com
 =ad.lgappstv.com
 =ads.lgtvcommon.com

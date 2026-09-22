@@ -15,4 +15,6 @@ blocked_query_response = 'refused'
   log_file = '@STATE@/blocked-names.log'
 [static]
   [static.'app-upstream']
-  stamp = 'sdns://AAAAAAAAAAAAEDE5Mi4xNjguMTc5LjE6NTM'
+  # @STAMP@ is generated at materialize time from the runtime-learned upstream
+  # (common.sh dns_stamp_upstream) — never a hardcoded network address.
+  stamp = '@STAMP@'

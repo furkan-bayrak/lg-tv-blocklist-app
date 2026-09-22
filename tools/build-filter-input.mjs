@@ -86,8 +86,9 @@ const headSha = execFileSync('git', ['-C', blocklistRepo, 'rev-parse', 'HEAD'], 
 const header = [
   '# lg-tv-blocklist-app filter input — GENERATED, DO NOT EDIT',
   '# generator: tools/build-filter-input.mjs',
-  '# source: lg-tv-blocklist @ ' + headSha,
-  '# generated: ' + new Date().toISOString()
+  '# source: lg-tv-blocklist @ ' + headSha
+  // No wall-clock timestamp: regenerating from the same source commit must be
+  // byte-identical (the commit date of this file is the provenance).
 ];
 
 const text = header.concat(unique).join('\n') + '\n';

@@ -359,9 +359,12 @@
     runGuarded(function (): void {
       show('Registering boot hook...', 'symlink only — the script is never copied (store rule).');
       LgBlocklistBridge.registerHook(function (response: HbExecResponse): void {
-        finish();
         showExecResult('Register boot hook', response);
+        // The nested readHookState is part of the same action: the busy flag stays
+        // held until it returns, so no second bridge command can interleave (S3
+        // review: finish() used to release it before this call).
         LgBlocklistBridge.readHookState(function (state: HbExecResponse): void {
+          finish();
           var target = state.stdoutString ? state.stdoutString : '(none)';
           output.textContent = formatExec(response) + '\n\nBoot hook now: ' + target;
         });

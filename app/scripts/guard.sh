@@ -17,19 +17,14 @@ while :; do
   if [ -n "$kpid" ]; then
     if ! pid_alive "$kpid" keeper; then
       log "guard-fired keeper-dead"
-      rules_off
-      filter_kill
-      state_set pointer off
-      log "guard-fail-open done"
+      fail_open_terminal "keeper-dead"      # rules off + filter killed + gaveup marker
       exit 0
     fi
   else
     empty=$((empty+1))
     [ "$empty" -lt "$GUARD_GRACE" ] && continue
     log "guard-fired keeper-never-started"
-    rules_off
-    filter_kill
-    state_set pointer off
+    fail_open_terminal "keeper-never-started"
     exit 0
   fi
 done

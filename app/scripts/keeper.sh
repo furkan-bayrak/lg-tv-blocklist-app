@@ -25,8 +25,9 @@ while :; do
   pointer=$(state_get pointer)
   [ "$pointer" = "on" ] || { cmiss=0; continue; }
 
-  # one-manager: skip while apply/rollback holds the lock
-  [ -d "$STATE/lock" ] && continue
+  # one-manager: skip while apply/rollback holds the lock. lock_live clears a
+  # STALE lock (dead holder) so a killed apply can't wedge the keeper until reboot.
+  lock_live && continue
 
   if filter_running; then
     if canary_sideport; then
@@ -43,7 +44,10 @@ while :; do
           log "keeper-upstream-changed"
           rules_off                      # fail-open first (DNS via new network path)
           filter_kill
-          materialize_config "$up2"
+          if ! materialize_config "$up2"; then
+            fail_open_terminal "upstream-change-materialize"
+            continue
+          fi
           state_set upstream "$up2"
           filter_start
           if ! canary_sideport; then
@@ -84,9 +88,12 @@ while :; do
     fail_open_terminal "upstream-wait-timeout"
     continue
   fi
-  [ -d "$STATE/lock" ] && continue     # apply/rollback took over mid-wait: retry next tick
+  lock_live && continue                # apply/rollback took over mid-wait: retry next tick
   state_set upstream "$up"
-  materialize_config "$up"
+  if ! materialize_config "$up"; then
+    fail_open_terminal "materialize"    # never restart the filter on a stale/half config
+    continue
+  fi
 
   # bounded restart loop (pauses if apply/rollback takes the lock)
   # Deviation from plan text (2026-09-16): counter renamed n → r. canary_sideport
@@ -96,7 +103,7 @@ while :; do
   ok=0
   r=0
   while [ "$r" -lt $MAX_ATTEMPTS ]; do
-    [ -d "$STATE/lock" ] && break
+    lock_live && break
     r=$((r+1))
     log "keeper-restart n=$r"
     filter_start
@@ -105,7 +112,7 @@ while :; do
     sleep $((r*BACKOFF))
   done
 
-  [ -d "$STATE/lock" ] && continue
+  lock_live && continue
   if [ "$ok" != "1" ]; then
     fail_open_terminal "restarts-exhausted"
     continue

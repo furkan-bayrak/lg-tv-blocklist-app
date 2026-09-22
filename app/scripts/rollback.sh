@@ -8,6 +8,10 @@ SELF_DIR=${SELF%/*}
 ensure_state
 if ! lock_acquire; then echo "RESULT=fail"; echo "reason=locked"; exit 0; fi
 
+# Release the lock on every exit path and on signals (see apply.sh).
+trap 'lock_release' EXIT
+trap 'lock_release; exit 130' INT TERM HUP
+
 log "rollback-start"
 rules_off
 filter_kill
