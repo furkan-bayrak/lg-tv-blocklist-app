@@ -22,8 +22,108 @@ no() { fail=$((fail + 1)); printf 'FAIL: %s — %s\n' "$1" "$2"; }
 
 norm() { sed 's/^ts=[0-9][0-9]*$/ts=<TS>/'; }
 
+# --- suite-wide daemon cleanup ------------------------------------------------
+# Every sandbox lives under this root so cleanup_all can find all pid files.
+# Without this, run_bg-spawned keeper/guard daemons survive the suite (they are
+# reparented to init) and their orphans accumulate / hold the caller's terminal.
+SB_ROOT="$(mktemp -d)" 2>/dev/null || SB_ROOT=""
+if [ -z "$SB_ROOT" ]; then
+  printf 'FATAL: cannot create sandbox root\n' >&2
+  exit 1
+fi
+
+# ps_scan — pids of keeper/guard processes whose command line references this
+# run's sandbox root. Works on Git Bash and Ubuntu CI: `ps -ef` (PID = field 2)
+# first, plain `ps` (PID = field 1) as fallback. The bracket trick
+# ([k]eeper\.sh|[g]uard\.sh) keeps the script-name grep from matching its own
+# command line, and the -F SB_ROOT filter keeps it from matching anything
+# outside the sandboxes (the suite's own argv has no SB_ROOT).
+ps_scan() {
+  [ -n "${SB_ROOT:-}" ] || return 0
+  if ps_out="$(ps -ef 2>/dev/null)" && [ -n "$ps_out" ]; then
+    printf '%s\n' "$ps_out" \
+      | grep -F -- "$SB_ROOT" \
+      | grep -E '[k]eeper\.sh|[g]uard\.sh' \
+      | awk '{print $2}'
+  else
+    ps_out="$(ps 2>/dev/null || true)"
+    printf '%s\n' "$ps_out" \
+      | grep -F -- "$SB_ROOT" \
+      | grep -E '[k]eeper\.sh|[g]uard\.sh' \
+      | awk '{print $1}'
+  fi
+}
+
+pidfile_pids() {  # pids recorded in every sandbox's keeper/guard pid files
+  [ -n "${SB_ROOT:-}" ] && [ -d "$SB_ROOT" ] || return 0
+  for f in "$SB_ROOT"/*/state/keeper.pid "$SB_ROOT"/*/state/guard.pid; do
+    [ -f "$f" ] || continue
+    p="$(cat "$f" 2>/dev/null || true)"
+    [ -n "$p" ] && printf '%s\n' "$p"
+  done
+}
+
+alive_count() {  # number of matching keeper/guard processes still alive
+  n=0
+  for p in $(pidfile_pids) $(ps_scan); do
+    [ -n "$p" ] || continue
+    if kill -0 "$p" 2>/dev/null; then n=$((n+1)); fi
+  done
+  printf '%s' "$n"
+}
+
+cleanup_all() {
+  [ "${CLEANED:-0}" = "1" ] && return 0
+  CLEANED=1
+  reaped=0
+  r=0
+  while [ "$r" -lt 3 ]; do
+    r=$((r+1))
+    # keeper pid files FIRST — keeper respawns guards
+    for f in "$SB_ROOT"/*/state/keeper.pid; do
+      [ -f "$f" ] || continue
+      p="$(cat "$f" 2>/dev/null || true)"
+      [ -n "$p" ] || continue
+      if kill -0 "$p" 2>/dev/null; then
+        kill -9 "$p" 2>/dev/null && reaped=$((reaped+1))
+      fi
+    done
+    # then guard pid files
+    for f in "$SB_ROOT"/*/state/guard.pid; do
+      [ -f "$f" ] || continue
+      p="$(cat "$f" 2>/dev/null || true)"
+      [ -n "$p" ] || continue
+      if kill -0 "$p" 2>/dev/null; then
+        kill -9 "$p" 2>/dev/null && reaped=$((reaped+1))
+      fi
+    done
+    # then any straggler whose cmdline references this run's sandbox root
+    for p in $(ps_scan); do
+      [ -n "$p" ] || continue
+      if kill -0 "$p" 2>/dev/null; then
+        kill -9 "$p" 2>/dev/null && reaped=$((reaped+1))
+      fi
+    done
+    sleep 0.3
+    [ "$(alive_count)" = "0" ] && break
+  done
+  survivors="$(alive_count)"
+  if [ "$survivors" = "0" ]; then
+    printf 'CLEANUP: ok (reaped %s, survivors 0)\n' "$reaped"
+  else
+    printf 'CLEANUP: FAIL — %s survivor(s)\n' "$survivors"
+  fi
+  [ -n "${SB_ROOT:-}" ] && [ -d "$SB_ROOT" ] && rm -rf "$SB_ROOT"
+  [ "$survivors" != "0" ] && exit 1
+  return 0
+}
+
+on_signal() { cleanup_all; exit 130; }
+trap cleanup_all EXIT
+trap on_signal INT TERM
+
 new_sandbox() {
-  SB="$(mktemp -d)"
+  SB="$(mktemp -d "$SB_ROOT/sb.XXXXXX")"
   mkdir -p "$SB/appdir/scripts" "$SB/hookdir"
   cp "$CHECK" "$REPO/app/scripts/common.sh" "$SB/appdir/scripts/"
   : > "$SB/appdir/scripts/boot.sh"
@@ -189,7 +289,7 @@ STUBBIN="$HERE/stub-bin"
 BASE_PATH="$PATH"
 
 new_app_sandbox() {
-  SB="$(mktemp -d)"
+  SB="$(mktemp -d "$SB_ROOT/sb.XXXXXX")"
   mkdir -p "$SB/appdir/scripts" "$SB/appdir/filter" "$SB/hookdir" "$SB/state" "$SB/bin"
   cp "$SCRIPTS_SRC/common.sh" "$SCRIPTS_SRC/apply.sh" "$SCRIPTS_SRC/rollback.sh" "$SCRIPTS_SRC/keeper.sh" "$SCRIPTS_SRC/guard.sh" "$SCRIPTS_SRC/check.sh" "$SCRIPTS_SRC/boot.sh" "$SB/appdir/scripts/"
   cp "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template" "$FILTER_SRC/filter-input.txt" "$SB/appdir/filter/"
@@ -684,7 +784,7 @@ env PATH="$SB/bin:$BASE_PATH" LGTVB_STATE_DIR="$SB/state" LGTVB_HOOK_DIR="$SB/ho
   TEST_LOG="$TEST_LOG" TEST_IPT_STATE="$TEST_IPT_STATE" \
   TEST_DNSQ_NAME_RC="$TEST_DNSQ_NAME_RC" TEST_DNSQ_SERVER_RC="$TEST_DNSQ_SERVER_RC" \
   TEST_DNSQ_RC=0 \
-  "$SH" "$SB/appdir/scripts/boot.sh" >>"$SB/boot.out" 2>&1 &
+  "$SH" "$SB/appdir/scripts/boot.sh" >>"$SB/boot.out" 2>&1 </dev/null &
 BPID=$!
 n=0
 while [ "$n" -lt 50 ] && kill -0 "$BPID" 2>/dev/null; do sleep 0.2; n=$((n+1)); done
