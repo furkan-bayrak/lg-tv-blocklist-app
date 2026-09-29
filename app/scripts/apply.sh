@@ -49,30 +49,19 @@ if ! canary_sideport; then
 fi
 log "apply-sideport-ok"
 
-rules_on "$up"
-if ! rules_present "$up"; then
-  log "apply-fail stage=rules"
-  rules_off; filter_kill
+if ! rules_on_verified "$up"; then
+  # keep the stage-specific strings for grep-ability / status history
+  case $RULES_FAIL in
+    rules)  log "apply-fail stage=rules";   reason=rules-add ;;
+    canary) log "apply-fail stage=e2e";     reason=verify-canary ;;
+    *)      log "apply-fail stage=blocked"; reason=verify-blocked ;;
+  esac
+  rules_off; filter_kill            # restore resolver FIRST, filter second
   lock_release
-  echo "RESULT=fail"; echo "reason=rules-add"
+  echo "RESULT=fail"; echo "reason=$reason"
   exit 0
 fi
 log "apply-rules-on"
-
-if ! canary_system; then
-  log "apply-fail stage=e2e"
-  rules_off; filter_kill            # restore resolver FIRST, filter second
-  lock_release
-  echo "RESULT=fail"; echo "reason=verify-canary"
-  exit 0
-fi
-if ! canary_blocked; then
-  log "apply-fail stage=blocked"
-  rules_off; filter_kill
-  lock_release
-  echo "RESULT=fail"; echo "reason=verify-blocked"
-  exit 0
-fi
 
 state_set upstream "$up"
 state_set cap "$CAP"

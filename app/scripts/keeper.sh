@@ -55,8 +55,7 @@ while :; do
             continue
           fi
         fi
-        rules_on "$up2"
-        if canary_system && canary_blocked; then
+        if rules_on_verified "$up2"; then
           log "keeper-rules-readd ok"
         else
           fail_open_terminal "rules-readd-verify"
@@ -73,6 +72,14 @@ while :; do
   log "keeper-filter-dead restore-first"
   rules_off                          # resolver restored FIRST
   filter_kill
+
+  # B-budget/T8: a missing binary can never come back by retrying. Recognize it
+  # directly BEFORE the upstream wait/restart loop so the terminal is
+  # deterministic and fast (T8 path B burned 104 s in canary/backoff).
+  if [ ! -f "$FILTER_BIN" ]; then
+    fail_open_terminal "filter-binary-missing"
+    continue
+  fi
 
   # upstream wait phase (network warmup; does NOT consume restart attempts)
   up=""
@@ -118,11 +125,9 @@ while :; do
     continue
   fi
 
-  rules_on "$up"
-  if canary_system && canary_blocked; then
+  if rules_on_verified "$up"; then
     log "keeper-recovered"
   else
     fail_open_terminal "recover-verify"
-    continue
   fi
 done

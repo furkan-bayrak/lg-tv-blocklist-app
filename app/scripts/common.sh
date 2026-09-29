@@ -3,7 +3,7 @@
 # Busybox ash compatible (LG G1, webOS 6). Test-only overrides:
 # LGTVB_STATE_DIR, LGTVB_FILTER_BIN, LGTVB_DNSQ, LGTVB_TICK, LGTVB_GUARD_TICK,
 # LGTVB_BACKOFF, LGTVB_UWAIT_ROUNDS, LGTVB_UWAIT_SLEEP, LGTVB_GUARD_GRACE,
-# LGTVB_HOOK_DIR, LGTVB_TARGETS_FILE.
+# LGTVB_RULES_RETRY, LGTVB_RULES_RETRY_SLEEP, LGTVB_HOOK_DIR, LGTVB_TARGETS_FILE.
 #
 # This file is a sourced library: its variables are consumed by the scripts that
 # source it (apply/rollback/check/boot/keeper/guard), so shellcheck's "appears
@@ -30,6 +30,8 @@ BACKOFF=${LGTVB_BACKOFF:-4}
 UWAIT_ROUNDS=${LGTVB_UWAIT_ROUNDS:-12}
 UWAIT_SLEEP=${LGTVB_UWAIT_SLEEP:-10}
 GUARD_GRACE=${LGTVB_GUARD_GRACE:-6}
+RULES_RETRY=${LGTVB_RULES_RETRY:-3}
+RULES_RETRY_SLEEP=${LGTVB_RULES_RETRY_SLEEP:-2}
 # All knobs: numeric only, no leading zeros (busybox ash $(( )) treats 08 as octal → error).
 CAP=none
 
@@ -109,8 +111,36 @@ lock_live() {  # rc 0 = lock present and held (skip); stale lock (dead pid) → 
 
 ensure_state() {
   mkdir -p "$STATE" 2>/dev/null
-  chmod 700 "$STATE" 2>/dev/null
+  # F2/T8: STATE is traverse-only for others (0711). The bundled dnscrypt-proxy
+  # re-execs itself as user_name='nobody' with CWD = this dir; its startup
+  # os.Getwd() resolves "." through the kernel's may_lookup, which requires
+  # ONLY search (x) here — read (r) would expose directory listings and is not
+  # needed. Private files stay 0600; the filter-facing files are relaxed by
+  # filter_perms (each mode's reason is documented there).
+  chmod 711 "$STATE" 2>/dev/null
+  # journal.log may be created by the first log() call AFTER the glob below
+  # (umask → 0644 on a fresh root shell): pre-create it so the 0600 pass holds.
+  [ -e "$STATE/journal.log" ] || : >> "$STATE/journal.log" 2>/dev/null
   chmod 600 "$STATE"/state "$STATE"/state.tmp "$STATE"/*.log* 2>/dev/null
+  filter_perms
+}
+
+# --- filter-facing modes (F2, T8 finding) ------------------------------------
+# Exactly what the uid99 filter child needs — verified against dnscrypt-proxy
+# 2.1.18 (main() os.Getwd -> stat("."); dlog opens/truncates log_file; the
+# blocked-names logger appends) and Linux namei semantics (may_lookup: x only):
+#   x on $STATE: getwd + path resolution when the binary re-execs as nobody
+#   r on the three inputs: toml, forwarding rules, blocked-names list
+#   w on the two log files: filter.log, blocked-names.log — pre-created because
+#     $STATE is (deliberately) not writable by uid99. Both are non-sensitive
+#     diagnostics; a chown-based tightening needs chown availability proof (S4).
+# Everything else (state, journal, keeper/guard logs, pids, lock) stays 0600.
+filter_perms() {
+  chmod 644 "$STATE"/dnscrypt-proxy.toml "$STATE"/forward-rules.txt "$STATE"/filter-input.txt 2>/dev/null
+  for f in "$STATE"/filter.log "$STATE"/blocked-names.log; do
+    [ -e "$f" ] || : >> "$f" 2>/dev/null
+    chmod 666 "$f" 2>/dev/null
+  done
 }
 
 cap_probe() {
@@ -130,9 +160,11 @@ cap_probe() {
 is_ipv4() { echo "$1" | grep -Eq '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'; }
 
 upstream_learn() {
-  # Read dns1 from connectionmanager — exact command + parse ported from
-  # C:\wezterm_temp\opencode\app-s0\g1\filter-apply.sh + upstream-probe.sh (READ THEM).
-  up=$(luna-send -n 1 -f luna://com.webos.service.connectionmanager/getStatus '{}' 2>/dev/null | sed -n 's/.*"dns1":"\([^"]*\)".*/\1/p')
+  # Read dns1 from connectionmanager. NO -f: on G1, -f pretty-prints the JSON
+  # (`"dns1": "…"`), which broke the original space-intolerant sed (T8 F1).
+  # The parse tolerates compact AND pretty output (belt+braces): any whitespace
+  # around the colon is allowed.
+  up=$(luna-send -n 1 luna://com.webos.service.connectionmanager/getStatus '{}' 2>/dev/null | sed -n 's/.*"dns1"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   if is_ipv4 "$up"; then echo "$up"; else echo ""; fi
 }
 
@@ -207,6 +239,12 @@ materialize_config() {
     log "materialize-fail reason=no-upstream"
     return 1
   fi
+  # B-budget/T8: a missing binary can never be fixed by retrying — fail fast
+  # (apply reports fail/materialize; the keeper has its own earlier fast path).
+  if [ ! -f "$FILTER_BIN" ]; then
+    log "materialize-fail reason=binary-missing"
+    return 1
+  fi
   stamp=$(dns_stamp_upstream "$up")
   if [ -z "$stamp" ]; then
     log "materialize-fail reason=stamp"
@@ -221,7 +259,9 @@ materialize_config() {
     log "materialize-fail reason=stamp-token"
     return 1
   fi
-  chmod 600 "$STATE/dnscrypt-proxy.toml" "$STATE/forward-rules.txt" "$STATE/filter-input.txt" 2>/dev/null
+  # F2/T8: filter-facing modes live in filter_perms (the uid99 child must read
+  # these; everything else in STATE stays root-only 0600).
+  filter_perms
   chmod +x "$FILTER_BIN" 2>/dev/null
   return 0
 }
@@ -280,6 +320,35 @@ rules_present() {  # $1 upstream — all -C checks must pass
   iptables -C "$RULES_FLT" -p tcp --dport 853 -j DROP 2>/dev/null || return 1
   iptables -C "$RULES_FLT" -p udp --dport 853 -j DROP 2>/dev/null || return 1
   return 0
+}
+
+# --- bounded rules verification (F3, T8 finding) -----------------------------
+# rules_on + end-to-end verify with a bounded retry, so a TRANSIENT failure
+# (xtables lock contention with another app, one DNS flake) does not immediately
+# burn the terminal fail-open path. rules_on is re-run each attempt (idempotent)
+# because a lock error can leave the chain half-built. Sets
+# RULES_FAIL=rules|canary|blocked on final failure so callers keep their
+# specific failure reasons.
+rules_on_verified() {
+  up=$1
+  RULES_FAIL=""
+  r=0
+  while [ "$r" -lt "$RULES_RETRY" ]; do
+    r=$((r+1))
+    rules_on "$up"
+    if ! rules_present "$up"; then
+      RULES_FAIL=rules
+    elif ! canary_system; then
+      RULES_FAIL=canary
+    elif ! canary_blocked; then
+      RULES_FAIL=blocked
+    else
+      [ "$r" -gt 1 ] && log "rules-retry-ok n=$r"
+      return 0
+    fi
+    [ "$r" -lt "$RULES_RETRY" ] && sleep "$RULES_RETRY_SLEEP"
+  done
+  return 1
 }
 
 fail_open_terminal() {  # $1 = reason; terminal give-up: protection OFF, TV works
