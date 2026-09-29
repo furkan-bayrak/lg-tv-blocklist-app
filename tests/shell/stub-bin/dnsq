@@ -18,4 +18,18 @@ if [ -n "${TEST_DNSQ_SERVER_RC:-}" ] && [ -f "$TEST_DNSQ_SERVER_RC" ]; then
     if [ "${2:-}" = "$pat" ]; then rc=$r; break; fi
   done < "$TEST_DNSQ_SERVER_RC"
 fi
+# T8-F3: with TEST_DNSQ_IPT_GATE set, a blocked-name query on the SYSTEM path
+# (no server argument) is REFUSED (rc 2) only when the app's NAT jump exists in
+# the fake ruleset — mirroring the real device, where a half-installed chain
+# lets blocked names resolve. Non-blocked names keep the scripted rc.
+if [ -n "${TEST_DNSQ_IPT_GATE:-}" ] && [ -z "${2:-}" ] && [ -n "${LGTVB_STATE_DIR:-}" ] && [ -n "${TEST_IPT_STATE:-}" ] && [ -f "$LGTVB_STATE_DIR/filter-input.txt" ]; then
+  bn="$(grep -m1 '^=' "$LGTVB_STATE_DIR/filter-input.txt" 2>/dev/null | cut -c2-)"
+  if [ -n "$bn" ]; then
+    case "$1" in
+      *"$bn")
+        if grep -qF 'R nat OUTPUT -j LGTVBLK' "$TEST_IPT_STATE" 2>/dev/null; then rc=2; else rc=0; fi
+        ;;
+    esac
+  fi
+fi
 exit "$rc"

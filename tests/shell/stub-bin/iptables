@@ -5,6 +5,18 @@
 [ -n "${TEST_LOG:-}" ] && echo "iptables $*" >> "$TEST_LOG"
 ST=${TEST_IPT_STATE:-}
 [ -n "$ST" ] || exit 0
+# T8-F3: optional one-shot xtables-lock failure. When TEST_IPT_LOCK_ONCE is set
+# and matches a substring of this invocation's args, the first matching call
+# fails with the real iptables lock error (rc 1); later calls proceed.
+if [ -n "${TEST_IPT_LOCK_ONCE:-}" ] && [ ! -e "$ST.lockfired" ]; then
+  case "$*" in
+    *"$TEST_IPT_LOCK_ONCE"*)
+      : > "$ST.lockfired"
+      echo "iptables: Another app is currently holding the xtables lock. Perhaps you want to use the -w option?" >&2
+      exit 1
+      ;;
+  esac
+fi
 if [ "${1:-}" = "-t" ]; then t=$2; shift 2; else t=filter; fi
 op=${1:-}
 shift

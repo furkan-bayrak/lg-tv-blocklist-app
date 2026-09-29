@@ -1,7 +1,9 @@
 #!/bin/sh
 # Test stub for luna-send: prints a canned connectionmanager/getStatus reply.
 # Test override: if TEST_LUNA_FILE is set and readable, print that file instead
-# (used by the T4 upstream-change case).
+# (used by the T4 upstream-change case and the T8-F1 pretty-output fixture).
+# Logs its invocation to TEST_LOG so tests can assert flags (e.g. no -f).
+[ -n "${TEST_LOG:-}" ] && echo "luna-send $*" >> "$TEST_LOG"
 if [ -n "${TEST_LUNA_FILE:-}" ] && [ -f "$TEST_LUNA_FILE" ]; then
   cat "$TEST_LUNA_FILE"
 else

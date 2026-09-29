@@ -306,6 +306,7 @@ new_app_sandbox() {
     '  state_get) shift; state_get "$1"; echo "rc=$?" ;;' \
     '  state_set) shift; state_set "$1" "$2"; echo "rc=$?" ;;' \
     '  cmdline_has) shift; cmdline_has "$1" "$2"; echo "rc=$?" ;;' \
+    '  ensure) shift; ensure_state; echo "rc=$?" ;;' \
     '  materialize) shift; materialize_config "$1"; echo "rc=$?" ;;' \
     '  stamp) shift; s=$(dns_stamp_upstream "$1"); rc=$?; printf "%s\nrc=%s\n" "$s" "$rc" ;;' \
     'esac' \
@@ -318,6 +319,7 @@ new_app_sandbox() {
   printf 'DNAT\n' > "$SB/targets"
   DNSQ_RC=0
   KEEPER_PID=""; GUARD_PID=""; FILTER_STUB_BIN=""; TEST_LUNA_FILE=""
+  TEST_IPT_LOCK_ONCE=""; TEST_DNSQ_IPT_GATE=""
 }
 
 run_app() {  # run_app <script-name>; sets OUT + RC (env-only, no args to scripts)
@@ -325,9 +327,11 @@ run_app() {  # run_app <script-name>; sets OUT + RC (env-only, no args to script
     LGTVB_STATE_DIR="$SB/state" LGTVB_HOOK_DIR="$SB/hookdir" \
     LGTVB_DNSQ="$SB/bin/dnsq" LGTVB_FILTER_BIN="$SB/bin/fake-dnscrypt-proxy" \
     LGTVB_TICK=1 LGTVB_GUARD_TICK=1 LGTVB_TARGETS_FILE="$SB/targets" \
+    LGTVB_RULES_RETRY=3 LGTVB_RULES_RETRY_SLEEP=0 \
     TEST_LOG="$TEST_LOG" TEST_IPT_STATE="$TEST_IPT_STATE" \
     TEST_DNSQ_NAME_RC="$TEST_DNSQ_NAME_RC" TEST_DNSQ_SERVER_RC="$TEST_DNSQ_SERVER_RC" \
-    TEST_DNSQ_RC="$DNSQ_RC" \
+    TEST_DNSQ_RC="$DNSQ_RC" TEST_LUNA_FILE="${TEST_LUNA_FILE:-}" \
+    TEST_IPT_LOCK_ONCE="${TEST_IPT_LOCK_ONCE:-}" TEST_DNSQ_IPT_GATE="${TEST_DNSQ_IPT_GATE:-}" \
     "$SH" "$SB/appdir/scripts/$1" 2>"$SB/stderr")"
   RC=$?
 }
@@ -357,15 +361,18 @@ cleanup_app_sandbox() {
 
 # ==================== S3 T4: keeper.sh / guard.sh helpers ====================
 run_bg() {  # run_bg <script> — background supervisor run; sets LAST_BG_PID
+  # TICK_OVERRIDE: tests that assert real production budget use TICK_OVERRIDE=5.
   env PATH="$SB/bin:$BASE_PATH" \
     LGTVB_STATE_DIR="$SB/state" LGTVB_HOOK_DIR="$SB/hookdir" \
     LGTVB_DNSQ="$SB/bin/dnsq" LGTVB_FILTER_BIN="${FILTER_STUB_BIN:-$SB/bin/fake-dnscrypt-proxy}" \
-    LGTVB_TICK=1 LGTVB_GUARD_TICK=1 \
+    LGTVB_TICK="${TICK_OVERRIDE:-1}" LGTVB_GUARD_TICK="${TICK_OVERRIDE:-1}" \
     LGTVB_BACKOFF=1 LGTVB_UWAIT_ROUNDS=2 LGTVB_UWAIT_SLEEP=1 LGTVB_GUARD_GRACE=2 \
+    LGTVB_RULES_RETRY=3 LGTVB_RULES_RETRY_SLEEP=0 \
     LGTVB_TARGETS_FILE="$SB/targets" \
     TEST_LOG="$TEST_LOG" TEST_IPT_STATE="$TEST_IPT_STATE" \
     TEST_DNSQ_NAME_RC="$TEST_DNSQ_NAME_RC" TEST_DNSQ_SERVER_RC="$TEST_DNSQ_SERVER_RC" \
     TEST_DNSQ_RC="$DNSQ_RC" TEST_LUNA_FILE="${TEST_LUNA_FILE:-}" \
+    TEST_IPT_LOCK_ONCE="${TEST_IPT_LOCK_ONCE:-}" TEST_DNSQ_IPT_GATE="${TEST_DNSQ_IPT_GATE:-}" \
     "$SH" "$SB/appdir/scripts/$1" >>"$SB/$1.out" 2>&1 </dev/null &
   LAST_BG_PID=$!
 }
@@ -1014,6 +1021,119 @@ if [ ! -s "$TEST_LOG" ]; then ok "apply empty-pid lock: no rule changes"; else n
 # Same bound as the live-holder case: 10 lock iterations x sleep 1.
 if [ $((t1 - t0)) -le 20 ]; then ok "apply empty-pid lock: bounded wait (<=20s)"; else no "apply empty-pid lock: bounded wait (<=20s)" "took $((t1 - t0))s"; fi
 cleanup_app_sandbox
+
+# ==================== S3.1 (T8 fix wave) ====================
+# F1: upstream_learn must survive REAL pretty-printed output (the old `luna-send
+# -f` on G1 pretty-prints JSON; the space-intolerant sed returned empty).
+new_app_sandbox
+blocked="$(grep -m1 '^=' "$SB/appdir/filter/filter-input.txt" | cut -c2-)"
+printf '%s 2\n' "$blocked" > "$TEST_DNSQ_NAME_RC"
+printf '%s\n' \
+  '{' \
+  '  "returnValue": true,' \
+  '  "dns1": "192.168.7.7",' \
+  '  "dns2": "192.168.9.1",' \
+  '  "dns3": "fd4d:c8d7:eb60::1"' \
+  '}' > "$SB/luna-pretty.json"
+TEST_LUNA_FILE="$SB/luna-pretty.json"
+run_app apply.sh
+assert_result "F1 pretty luna output: on/verified" on verified
+if printf '%s\n' "$OUT" | grep -q '^upstream=192.168.7.7$'; then ok "F1 pretty luna output: upstream echoed"; else no "F1 pretty luna output: upstream echoed" "OUT: $OUT"; fi
+if chk_state '^upstream=192.168.7.7$'; then ok "F1 pretty luna output: upstream stored"; else no "F1 pretty luna output: upstream stored" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+if grep -q 'luna-send -n 1 luna://com.webos.service.connectionmanager/getStatus' "$TEST_LOG"; then ok "F1 luna call: -n 1 + getStatus"; else no "F1 luna call: -n 1 + getStatus" "$(grep 'luna-send' "$TEST_LOG" 2>/dev/null | head -2)"; fi
+if ! grep -q 'luna-send.*-f' "$TEST_LOG"; then ok "F1 luna call: -f flag dropped"; else no "F1 luna call: -f flag dropped" "$(grep 'luna-send' "$TEST_LOG")"; fi
+cleanup_app_sandbox
+
+# F2 (T8): permission layout — dir 0711 (traverse-only, no listing) + exactly
+# the modes the uid99 filter needs; sensitive files stay 0600. MSYS cannot
+# represent POSIX modes (stat always reports 644/755), so the numeric checks
+# run on Linux/CI only; the two structural checks run everywhere.
+new_app_sandbox
+blocked="$(grep -m1 '^=' "$SB/appdir/filter/filter-input.txt" | cut -c2-)"
+printf '%s 2\n' "$blocked" > "$TEST_DNSQ_NAME_RC"
+run_app apply.sh
+assert_result "F2 apply sanity: on/verified" on verified
+if [ -f "$SB/state/blocked-names.log" ]; then ok "F2 blocked-names.log pre-created (uid99 cannot create)"; else no "F2 blocked-names.log pre-created (uid99 cannot create)" "missing"; fi
+if [ -f "$SB/state/filter.log" ]; then ok "F2 filter.log present"; else no "F2 filter.log present" "missing"; fi
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    printf 'SKIP: F2 mode table — MSYS stat does not reflect chmod (CI is authoritative)\n'
+    ;;
+  *)
+    mode_of() { stat -c %a "$1" 2>/dev/null; }
+    chk_mode() { if [ "$(mode_of "$2")" = "$3" ]; then ok "$1"; else no "$1" "want $3 got $(mode_of "$2")"; fi; }
+    chk_mode "F2 mode: STATE dir 711 (traverse-only)" "$SB/state" "711"
+    chk_mode "F2 mode: toml 644" "$SB/state/dnscrypt-proxy.toml" "644"
+    chk_mode "F2 mode: forward-rules 644" "$SB/state/forward-rules.txt" "644"
+    chk_mode "F2 mode: filter-input 644" "$SB/state/filter-input.txt" "644"
+    chk_mode "F2 mode: filter.log 666" "$SB/state/filter.log" "666"
+    chk_mode "F2 mode: blocked-names.log 666" "$SB/state/blocked-names.log" "666"
+    chk_mode "F2 mode: state stays 600" "$SB/state/state" "600"
+    chk_mode "F2 mode: journal.log stays 600" "$SB/state/journal.log" "600"
+    # an ensure_state pass (keeper/boot startup) must not clobber the layout
+    OUT="$(probe_run ensure)"
+    chk_mode "F2 mode: STATE still 711 after ensure_state" "$SB/state" "711"
+    chk_mode "F2 mode: filter.log still 666 after ensure_state" "$SB/state/filter.log" "666"
+    chk_mode "F2 mode: toml still 644 after ensure_state" "$SB/state/dnscrypt-proxy.toml" "644"
+    ;;
+esac
+cleanup_app_sandbox
+
+# F3 (T8): a one-shot xtables-lock failure during rules re-add must NOT be
+# terminal — the bounded retry recovers (T8 path A attempt 1 regression).
+new_app_sandbox
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+start_fake_filter
+TEST_DNSQ_IPT_GATE=1
+TEST_IPT_LOCK_ONCE="-t nat -I OUTPUT 1 -j LGTVBLK"
+run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
+sleep 0.6
+kill -9 "$(cat "$SB/state/filter.pid" 2>/dev/null)" 2>/dev/null
+if wait_for "$SB/state/journal.log" 'keeper-recovered' 300; then ok "F3 keeper retry: recovered after lock hit"; else no "F3 keeper retry: recovered after lock hit" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if jrnl 'rules-retry-ok n=2'; then ok "F3 keeper retry: retry logged (n=2)"; else no "F3 keeper retry: retry logged (n=2)" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if ! jrnl 'terminal-giveup'; then ok "F3 keeper retry: no terminal give-up"; else no "F3 keeper retry: no terminal give-up" "$(grep terminal-giveup "$SB/state/journal.log")"; fi
+inat="$(grep -c 'iptables -t nat -I OUTPUT 1 -j LGTVBLK$' "$TEST_LOG" 2>/dev/null || true)"
+if [ "${inat:-0}" -ge 2 ]; then ok "F3 keeper retry: failed + successful insert seen (2x)"; else no "F3 keeper retry: failed + successful insert seen (2x)" "count=$inat"; fi
+if [ -e "$TEST_IPT_STATE.lockfired" ]; then ok "F3 keeper retry: lock error actually fired once"; else no "F3 keeper retry: lock error actually fired once" "no marker"; fi
+if chk_state '^pointer=on$' && [ ! -e "$SB/state/gaveup" ]; then ok "F3 keeper retry: stays ON, no gaveup"; else no "F3 keeper retry: stays ON, no gaveup" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+TEST_DNSQ_IPT_GATE=""; TEST_IPT_LOCK_ONCE=""
+stop_t4
+
+# F3: the apply path gets the same bounded retry (first attempt hits the lock).
+new_app_sandbox
+TEST_DNSQ_IPT_GATE=1
+TEST_IPT_LOCK_ONCE="-t nat -I OUTPUT 1 -j LGTVBLK"
+run_app apply.sh
+assert_result "F3 apply retry: on/verified after lock hit" on verified
+if jrnl 'rules-retry-ok n=2'; then ok "F3 apply retry: retry logged (n=2)"; else no "F3 apply retry: retry logged (n=2)" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+inat="$(grep -c 'iptables -t nat -I OUTPUT 1 -j LGTVBLK$' "$TEST_LOG" 2>/dev/null || true)"
+if [ "${inat:-0}" -ge 2 ]; then ok "F3 apply retry: failed + successful insert seen (2x)"; else no "F3 apply retry: failed + successful insert seen (2x)" "count=$inat"; fi
+TEST_DNSQ_IPT_GATE=""; TEST_IPT_LOCK_ONCE=""
+cleanup_app_sandbox
+
+# B-budget (T8): binary gone + filter dead → deterministic fast terminal, no
+# restart loop, <=60 s (acceptance number) with the PRODUCTION tick (5 s).
+new_app_sandbox
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+FILTER_STUB_BIN="$SB/bin/absent-dnscrypt-proxy"
+make_dead_pid
+echo "$DEAD_PID" > "$SB/state/filter.pid"
+TICK_OVERRIDE=5
+t0="$(date +%s)"
+run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
+if wait_for "$SB/state/journal.log" 'terminal-giveup reason=filter-binary-missing' 100; then
+  t1="$(date +%s)"
+  if [ $((t1 - t0)) -le 60 ]; then ok "B-budget: terminal <=60s (got $((t1 - t0))s, TICK=5)"; else no "B-budget: terminal <=60s" "took $((t1 - t0))s"; fi
+else
+  no "B-budget: terminal <=60s" "never reached: $(cat "$SB/state/journal.log" 2>/dev/null)"
+fi
+TICK_OVERRIDE=""
+if ! jrnl 'keeper-restart'; then ok "B-budget: no restart attempts (restart loop skipped)"; else no "B-budget: no restart attempts (restart loop skipped)" "$(grep 'keeper-restart' "$SB/state/journal.log")"; fi
+if ! grep -q 'filter-start' "$TEST_LOG" 2>/dev/null; then ok "B-budget: filter never (re)started"; else no "B-budget: filter never (re)started" "$(grep 'filter-start' "$TEST_LOG")"; fi
+if chk_state '^pointer=off$' && [ -f "$SB/state/gaveup" ]; then ok "B-budget: pointer=off + gaveup marker"; else no "B-budget: pointer=off + gaveup marker" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+stop_t4
 
 # --- Summary -----------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
