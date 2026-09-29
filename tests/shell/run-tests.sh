@@ -1070,6 +1070,11 @@ case "$(uname -s 2>/dev/null)" in
     chk_mode "F2 mode: blocked-names.log 666" "$SB/state/blocked-names.log" "666"
     chk_mode "F2 mode: state stays 600" "$SB/state/state" "600"
     chk_mode "F2 mode: journal.log stays 600" "$SB/state/journal.log" "600"
+    # nit (T8 review): supervisor logs are pre-created by ensure_state, so their
+    # mode already holds from the first write (previously tightened only on the
+    # next ensure_state pass).
+    chk_mode "F2 mode: keeper.log stays 600" "$SB/state/keeper.log" "600"
+    chk_mode "F2 mode: guard.log stays 600" "$SB/state/guard.log" "600"
     # an ensure_state pass (keeper/boot startup) must not clobber the layout
     OUT="$(probe_run ensure)"
     chk_mode "F2 mode: STATE still 711 after ensure_state" "$SB/state" "711"

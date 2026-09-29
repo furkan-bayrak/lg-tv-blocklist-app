@@ -118,9 +118,12 @@ ensure_state() {
   # needed. Private files stay 0600; the filter-facing files are relaxed by
   # filter_perms (each mode's reason is documented there).
   chmod 711 "$STATE" 2>/dev/null
-  # journal.log may be created by the first log() call AFTER the glob below
-  # (umask → 0644 on a fresh root shell): pre-create it so the 0600 pass holds.
+  # journal/keeper/guard logs are created by >> redirects (umask → 0644 on a
+  # fresh root shell) AFTER the glob below: pre-create them so the 0600 pass
+  # holds from the very first write, not just from the next ensure_state pass.
   [ -e "$STATE/journal.log" ] || : >> "$STATE/journal.log" 2>/dev/null
+  [ -e "$STATE/keeper.log" ] || : >> "$STATE/keeper.log" 2>/dev/null
+  [ -e "$STATE/guard.log" ] || : >> "$STATE/guard.log" 2>/dev/null
   chmod 600 "$STATE"/state "$STATE"/state.tmp "$STATE"/*.log* 2>/dev/null
   filter_perms
 }
@@ -134,7 +137,11 @@ ensure_state() {
 #   w on the two log files: filter.log, blocked-names.log — pre-created because
 #     $STATE is (deliberately) not writable by uid99. Both are non-sensitive
 #     diagnostics; a chown-based tightening needs chown availability proof (S4).
-# Everything else (state, journal, keeper/guard logs, pids, lock) stays 0600.
+# Everything else is 0600 via the ensure_state pass above (state, journal and
+# the pre-created keeper/guard logs). The pid files (filter/keeper/guard.pid)
+# and lock/ + lock/pid are never chmodded (created under root's umask) —
+# harmless: PIDs are non-sensitive, $STATE is 0711 (not listable), uid99 cannot
+# write here.
 filter_perms() {
   chmod 644 "$STATE"/dnscrypt-proxy.toml "$STATE"/forward-rules.txt "$STATE"/filter-input.txt 2>/dev/null
   for f in "$STATE"/filter.log "$STATE"/blocked-names.log; do
@@ -330,23 +337,27 @@ rules_present() {  # $1 upstream — all -C checks must pass
 # RULES_FAIL=rules|canary|blocked on final failure so callers keep their
 # specific failure reasons.
 rules_on_verified() {
-  up=$1
+  # T8 review nit: POSIX sh has no `local`; these used to shadow the shared
+  # globals `up`/`r` (keeper.sh's restart loop uses `r` — the same sharing class
+  # already caused one bug, keeper.sh:106-109). Prefixed names keep this
+  # function's scratch state disjoint. Log format "n=$rr_r" is unchanged.
+  rr_up=$1
   RULES_FAIL=""
-  r=0
-  while [ "$r" -lt "$RULES_RETRY" ]; do
-    r=$((r+1))
-    rules_on "$up"
-    if ! rules_present "$up"; then
+  rr_r=0
+  while [ "$rr_r" -lt "$RULES_RETRY" ]; do
+    rr_r=$((rr_r+1))
+    rules_on "$rr_up"
+    if ! rules_present "$rr_up"; then
       RULES_FAIL=rules
     elif ! canary_system; then
       RULES_FAIL=canary
     elif ! canary_blocked; then
       RULES_FAIL=blocked
     else
-      [ "$r" -gt 1 ] && log "rules-retry-ok n=$r"
+      [ "$rr_r" -gt 1 ] && log "rules-retry-ok n=$rr_r"
       return 0
     fi
-    [ "$r" -lt "$RULES_RETRY" ] && sleep "$RULES_RETRY_SLEEP"
+    [ "$rr_r" -lt "$RULES_RETRY" ] && sleep "$RULES_RETRY_SLEEP"
   done
   return 1
 }
