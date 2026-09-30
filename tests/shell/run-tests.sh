@@ -300,7 +300,7 @@ new_app_sandbox() {
   # "device without the port" overwrite this file after new_app_sandbox.
   printf '  sl  local_address rem_address   st\n   0: 0100007F:14D7 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100\n' > "$SB/proc_tcp"
   # probe.sh — sources common.sh with the same $0-based paths as the app scripts,
-  # so the suite can call helpers directly (state_get, cmdline_has, stamp,
+  # so the suite can call helpers directly (state_set, state_get, cmdline_has,
   # materialize) instead of only through the fixed entrypoints.
   printf '%s\n' \
     'SELF=$(readlink -f "$0" 2>/dev/null); [ -n "$SELF" ] || SELF="$0"' \
@@ -312,7 +312,6 @@ new_app_sandbox() {
     '  cmdline_has) shift; cmdline_has "$1" "$2"; echo "rc=$?" ;;' \
     '  ensure) shift; ensure_state; echo "rc=$?" ;;' \
     '  materialize) shift; materialize_config "$1"; echo "rc=$?" ;;' \
-    '  stamp) shift; s=$(dns_stamp_upstream "$1"); rc=$?; printf "%s\nrc=%s\n" "$s" "$rc" ;;' \
     'esac' \
     > "$SB/appdir/scripts/probe.sh"
   chmod +x "$SB/appdir/scripts/probe.sh"
@@ -463,8 +462,8 @@ if chk_log '! -d 192.168.179.1 -p tcp --dport 53 -j DNAT --to-destination 127.0.
 if chk_log '-t nat -I OUTPUT 1 -j LGTVBLK'; then ok "apply happy path: nat jump inserted"; else no "apply happy path: nat jump inserted" "log: $(head -8 "$TEST_LOG")"; fi
 if chk_log '-I OUTPUT 1 -j LGTVBLK-FILTER'; then ok "apply happy path: filter jump inserted"; else no "apply happy path: filter jump inserted" "log: $(head -8 "$TEST_LOG")"; fi
 if [ ! -e "$SB/state/gaveup" ]; then ok "apply happy path: no gaveup marker"; else no "apply happy path: no gaveup marker" "gaveup exists"; fi
-if grep -q "stamp = 'sdns://AAAAAAAAAAAAEDE5Mi4xNjguMTc5LjE6NTM'" "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; then ok "apply happy path: stamp generated for learned upstream"; else no "apply happy path: stamp generated for learned upstream" "$(tail -3 "$SB/state/dnscrypt-proxy.toml" 2>/dev/null)"; fi
-if ! grep -q '192\.168\.179\.' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null && ! grep -q '@STAMP@' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; then ok "apply happy path: no hardcoded IP / leftover token in config"; else no "apply happy path: no hardcoded IP / leftover token in config" "$(grep -n '192\.168\.179\.\|@STAMP@' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null)"; fi
+if grep -q '^\. 192\.168\.179\.1$' "$SB/state/forward-rules.txt" 2>/dev/null; then ok "apply happy path: forward-rules rewritten to learned upstream"; else no "apply happy path: forward-rules rewritten to learned upstream" "$(cat "$SB/state/forward-rules.txt" 2>/dev/null)"; fi
+if ! grep -qF '@' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null && ! grep -q 'sdns://' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null && ! grep -qF '[static]' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; then ok "apply happy path: rendered config token-free (no @, sdns://, [static])"; else no "apply happy path: rendered config token-free (no @, sdns://, [static])" "$(grep -nF '@' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; grep -n 'sdns://\|\[static\]' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null)"; fi
 if grep -q '^\. 192\.168\.179\.1$' "$SB/state/forward-rules.txt" 2>/dev/null; then ok "apply happy path: forwarding rules use learned upstream"; else no "apply happy path: forwarding rules use learned upstream" "$(cat "$SB/state/forward-rules.txt" 2>/dev/null)"; fi
 if [ ! -d "$SB/state/lock" ]; then ok "apply happy path: lock released"; else no "apply happy path: lock released" "lock dir present"; fi
 cleanup_app_sandbox
@@ -618,8 +617,8 @@ run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
 if wait_for "$SB/state/journal.log" 'keeper-upstream-changed' 200; then ok "keeper upstream change: detected"; else no "keeper upstream change: detected" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
 if wait_for "$SB/state/journal.log" 'keeper-rules-readd ok' 100; then ok "keeper upstream change: re-applied + verified"; else no "keeper upstream change: re-applied + verified" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
 if chk_state '^upstream=192.168.5.5$'; then ok "keeper upstream change: state upstream updated"; else no "keeper upstream change: state upstream updated" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
-if grep -q "stamp = 'sdns://AAAAAAAAAAAADjE5Mi4xNjguNS41OjUz'" "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; then ok "keeper upstream change: stamp regenerated for new upstream"; else no "keeper upstream change: stamp regenerated for new upstream" "$(tail -3 "$SB/state/dnscrypt-proxy.toml" 2>/dev/null)"; fi
-if ! grep -q 'sdns://AAAAAAAAAAAAEDE5Mi4xNjguMTc5LjE6NTM' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; then ok "keeper upstream change: old stamp gone"; else no "keeper upstream change: old stamp gone" "stale stamp still in config"; fi
+if grep -q '^\. 192\.168\.5\.5$' "$SB/state/forward-rules.txt" 2>/dev/null; then ok "keeper upstream change: forward-rules rewritten to new upstream"; else no "keeper upstream change: forward-rules rewritten to new upstream" "$(cat "$SB/state/forward-rules.txt" 2>/dev/null)"; fi
+if ! grep -q '^\. 192\.168\.179\.1$' "$SB/state/forward-rules.txt" 2>/dev/null; then ok "keeper upstream change: old upstream gone from forward-rules"; else no "keeper upstream change: old upstream gone from forward-rules" "$(cat "$SB/state/forward-rules.txt" 2>/dev/null)"; fi
 if chk_log '! -d 192.168.5.5 -p udp --dport 53 -j DNAT --to-destination 127.0.0.1:5335'; then ok "keeper upstream change: new exclusion in rules"; else no "keeper upstream change: new exclusion in rules" "$(tail -4 "$TEST_LOG" 2>/dev/null)"; fi
 stop_t4
 
@@ -980,7 +979,8 @@ if [ -n "$gp" ] && kill -0 "$gp" 2>/dev/null; then ok "boot-on-delegates: guard 
 stop_t4
 
 # ==================== S3 review-fix coverage ====================
-# Fix 1: runtime upstream stamp (template token + materialize substitution).
+# Fix 1 (S4 T5): runtime upstream config — materialize substitution only; the dead
+# dnscrypt [static] stamp was dropped, forwarding_rules carries all resolution.
 # Fix 2: keeper stale-lock recovery, live-lock skip, apply signal trap.
 # Fix 4: checked materialize (upstream-change + restart paths).
 # Fix 7: fixed-key state_get / literal cmdline_has.
@@ -994,31 +994,25 @@ probe_run() {  # probe_run <helper> [args...] — call a common.sh helper via pr
     "$SH" "$SB/appdir/scripts/probe.sh" "$@"
 }
 
-# --- Fix 1: stamp encoder (vectors computed independently with node Buffer) ---
-new_app_sandbox
-stamp_check() {  # stamp_check <name> <ip> <expected stamp>
-  OUT="$(probe_run stamp "$2")"
-  got="$(printf '%s\n' "$OUT" | sed -n '1p')"
-  rc="$(printf '%s\n' "$OUT" | sed -n '2p')"
-  if [ "$got" = "$3" ] && [ "$rc" = "rc=0" ]; then ok "$1"; else no "$1" "got [$got] [$rc]"; fi
-}
-stamp_check "stamp: 192.168.179.1 (S0 vector)" 192.168.179.1 'sdns://AAAAAAAAAAAAEDE5Mi4xNjguMTc5LjE6NTM'
-stamp_check "stamp: 192.168.5.5" 192.168.5.5 'sdns://AAAAAAAAAAAADjE5Mi4xNjguNS41OjUz'
-stamp_check "stamp: 10.0.0.1 (exact 3-byte groups)" 10.0.0.1 'sdns://AAAAAAAAAAAACzEwLjAuMC4xOjUz'
-stamp_check "stamp: 255.255.255.255" 255.255.255.255 'sdns://AAAAAAAAAAAAEjI1NS4yNTUuMjU1LjI1NTo1Mw'
-OUT="$(probe_run stamp 'not.an.ip')"
-if [ "$(printf '%s\n' "$OUT" | sed -n '2p')" = "rc=1" ]; then ok "stamp: invalid upstream rejected"; else no "stamp: invalid upstream rejected" "got [$OUT]"; fi
-if ! grep -q '192\.168\.179\.' "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template"; then ok "stamp: shipped templates carry no hardcoded IP"; else no "stamp: shipped templates carry no hardcoded IP" "$(grep -Hn '192\.168\.179\.' "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template")"; fi
-cleanup_app_sandbox
-
-# --- Fix 1: materialize — explicit no-upstream failure + stamp from upstream ---
+# --- Fix 1: materialize — explicit no-upstream failure + token-free render -----
+# (S4 T5: the stamp-encoder vectors were retired with [static]; forwarding_rules
+# and the generic leftover-token guard carry this coverage now.)
 new_app_sandbox
 OUT="$(probe_run materialize '')"
 if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=1" ] && [ ! -f "$SB/state/dnscrypt-proxy.toml" ]; then ok "materialize: empty upstream → rc 1, nothing written"; else no "materialize: empty upstream → rc 1, nothing written" "got [$OUT]"; fi
 if jrnl 'materialize-fail reason=no-upstream'; then ok "materialize: clear journal reason"; else no "materialize: clear journal reason" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
 OUT="$(probe_run materialize 192.168.5.5)"
-if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ] && grep -q "stamp = 'sdns://AAAAAAAAAAAADjE5Mi4xNjguNS41OjUz'" "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; then ok "materialize: config stamp matches learned upstream"; else no "materialize: config stamp matches learned upstream" "got [$OUT] $(tail -3 "$SB/state/dnscrypt-proxy.toml" 2>/dev/null)"; fi
-if ! grep -q '192\.168\.179\.' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null && ! grep -q '@STAMP@' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; then ok "materialize: no hardcoded IP, no leftover token"; else no "materialize: no hardcoded IP, no leftover token" "$(grep -n '192\.168\.179\.\|@STAMP@' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null)"; fi
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ] && grep -q '^\. 192\.168\.5\.5$' "$SB/state/forward-rules.txt" 2>/dev/null; then ok "materialize: forward-rules match learned upstream"; else no "materialize: forward-rules match learned upstream" "got [$OUT] $(cat "$SB/state/forward-rules.txt" 2>/dev/null)"; fi
+if ! grep -qF '@' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null && ! grep -q 'sdns://' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null && ! grep -qF '[static]' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; then ok "materialize: rendered config token-free (no @, sdns://, [static])"; else no "materialize: rendered config token-free (no @, sdns://, [static])" "$(grep -nF '@' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; grep -n 'sdns://\|\[static\]' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null)"; fi
+if ! grep -q '192\.168\.179\.' "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template"; then ok "templates: shipped templates carry no hardcoded IP"; else no "templates: shipped templates carry no hardcoded IP" "$(grep -Hn '192\.168\.179\.' "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template")"; fi
+cleanup_app_sandbox
+
+# --- S4 T5: leftover '@' token → materialize fails with reason=token-left -------
+new_app_sandbox
+printf '@LEFTOVER@\n' > "$SB/appdir/filter/dnscrypt-proxy.toml.template"
+run_app apply.sh
+assert_result "token-left: apply fail/materialize" fail materialize
+if jrnl 'materialize-fail reason=token-left'; then ok "token-left: journal reason"; else no "token-left: journal reason" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
 cleanup_app_sandbox
 
 # --- Fix 2: keeper — stale lock (dead pid) cleared, keeper proceeds -----------
