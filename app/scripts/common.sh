@@ -3,7 +3,8 @@
 # Busybox ash compatible (LG G1, webOS 6). Test-only overrides:
 # LGTVB_STATE_DIR, LGTVB_FILTER_BIN, LGTVB_DNSQ, LGTVB_TICK, LGTVB_GUARD_TICK,
 # LGTVB_BACKOFF, LGTVB_UWAIT_ROUNDS, LGTVB_UWAIT_SLEEP, LGTVB_GUARD_GRACE,
-# LGTVB_RULES_RETRY, LGTVB_RULES_RETRY_SLEEP, LGTVB_HOOK_DIR, LGTVB_TARGETS_FILE.
+# LGTVB_RULES_RETRY, LGTVB_RULES_RETRY_SLEEP, LGTVB_HOOK_DIR, LGTVB_TARGETS_FILE,
+# LGTVB_CANARY_EVERY, LGTVB_PROC_TCP.
 #
 # This file is a sourced library: its variables are consumed by the scripts that
 # source it (apply/rollback/check/boot/keeper/guard), so shellcheck's "appears
@@ -32,6 +33,9 @@ UWAIT_SLEEP=${LGTVB_UWAIT_SLEEP:-10}
 GUARD_GRACE=${LGTVB_GUARD_GRACE:-6}
 RULES_RETRY=${LGTVB_RULES_RETRY:-3}
 RULES_RETRY_SLEEP=${LGTVB_RULES_RETRY_SLEEP:-2}
+# Cheap probe passed → run the expensive functional canary every CANARY_EVERY ticks
+# (≥1; 1 = every tick). Default 6 ≈ 30 s at TICK=5.
+CANARY_EVERY=${LGTVB_CANARY_EVERY:-6}
 # All knobs: numeric only, no leading zeros (busybox ash $(( )) treats 08 as octal → error).
 CAP=none
 
@@ -285,6 +289,13 @@ filter_kill() {
   rm -f "$STATE/filter.pid"
 }
 filter_running() { pid_alive "$(cat "$STATE/filter.pid" 2>/dev/null)" dnscrypt; }
+# --- cheap liveness: pid + local listening port (no process spawn) ---
+filter_alive_cheap() {
+  filter_running || return 1
+  hex=$(printf '%04X' "$FILTER_PORT" 2>/dev/null)
+  [ -n "$hex" ] || return 1
+  grep -q "0100007F:$hex 00000000:0000 0A" "${LGTVB_PROC_TCP:-/proc/net/tcp}" 2>/dev/null
+}
 keeper_running() { pid_alive "$(cat "$STATE/keeper.pid" 2>/dev/null)" keeper; }
 guard_running()  { pid_alive "$(cat "$STATE/guard.pid" 2>/dev/null)" guard; }
 

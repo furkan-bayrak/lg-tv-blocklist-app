@@ -7,14 +7,23 @@ SELF_DIR=${SELF%/*}
 . "$SELF_DIR/common.sh"
 
 ensure_state
+# one-manager: a live duplicate exits (closes the boot/apply double-spawn race;
+# a simultaneous-spawn window remains, see S4 plan Design Decision 3).
+kp=$(cat "$STATE/keeper.pid" 2>/dev/null)
+if [ -n "$kp" ] && [ "$kp" != "$$" ] && pid_alive "$kp" keeper; then
+  log "keeper-duplicate-exit pid=$kp"
+  exit 0
+fi
 echo $$ > "$STATE/keeper.pid"
 log "keeper-start pid=$$"
 
 MAX_ATTEMPTS=3
 cmiss=0
+tseq=0
 
 while :; do
   sleep "$TICK"
+  tseq=$((tseq+1))
 
   # guard supervision (cheap, always)
   if ! guard_running; then
@@ -29,7 +38,13 @@ while :; do
   # STALE lock (dead holder) so a killed apply can't wedge the keeper until reboot.
   lock_live && continue
 
-  if filter_running; then
+  if filter_alive_cheap; then
+    # Cheap liveness (pid + listening port) passed. Run the expensive functional
+    # canary only every CANARY_EVERY ticks — per-tick dnsq spawns were the T8
+    # ~24 s detection-latency driver under load.
+    if [ $((tseq % CANARY_EVERY)) -ne 0 ]; then
+      continue
+    fi
     if canary_sideport; then
       cmiss=0
       # integrity: rules exist (tolerates foreign flush) + upstream still valid

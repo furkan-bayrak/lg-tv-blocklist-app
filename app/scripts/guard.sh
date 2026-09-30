@@ -7,6 +7,12 @@ SELF_DIR=${SELF%/*}
 . "$SELF_DIR/common.sh"
 
 ensure_state
+# one-manager: a live duplicate exits (same pattern as keeper.sh; S4 Design Decision 3).
+gp=$(cat "$STATE/guard.pid" 2>/dev/null)
+if [ -n "$gp" ] && [ "$gp" != "$$" ] && pid_alive "$gp" guard; then
+  log "guard-duplicate-exit pid=$gp"
+  exit 0
+fi
 echo $$ > "$STATE/guard.pid"
 log "guard-start pid=$$"
 

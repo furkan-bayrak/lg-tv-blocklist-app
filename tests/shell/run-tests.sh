@@ -295,6 +295,10 @@ new_app_sandbox() {
   cp "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template" "$FILTER_SRC/filter-input.txt" "$SB/appdir/filter/"
   cp "$STUBBIN/iptables" "$STUBBIN/luna-send" "$STUBBIN/dnsq" "$STUBBIN/fake-dnscrypt-proxy" "$STUBBIN/fake-dnscrypt-proxy-dead" "$SB/bin/"
   chmod +x "$SB/appdir/scripts/apply.sh" "$SB/appdir/scripts/rollback.sh" "$SB/appdir/scripts/keeper.sh" "$SB/appdir/scripts/guard.sh" "$SB/appdir/scripts/check.sh" "$SB/appdir/scripts/boot.sh" "$SB/bin/iptables" "$SB/bin/luna-send" "$SB/bin/dnsq" "$SB/bin/fake-dnscrypt-proxy" "$SB/bin/fake-dnscrypt-proxy-dead"
+  # S4/T3: default "filter listening" fixture for the keeper's cheap probe
+  # (port 5335 = 0x14D7, local 127.0.0.1, state 0A = LISTEN). Tests that need
+  # "device without the port" overwrite this file after new_app_sandbox.
+  printf '  sl  local_address rem_address   st\n   0: 0100007F:14D7 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100\n' > "$SB/proc_tcp"
   # probe.sh — sources common.sh with the same $0-based paths as the app scripts,
   # so the suite can call helpers directly (state_get, cmdline_has, stamp,
   # materialize) instead of only through the fixed entrypoints.
@@ -328,6 +332,7 @@ run_app() {  # run_app <script-name>; sets OUT + RC (env-only, no args to script
     LGTVB_DNSQ="$SB/bin/dnsq" LGTVB_FILTER_BIN="$SB/bin/fake-dnscrypt-proxy" \
     LGTVB_TICK=1 LGTVB_GUARD_TICK=1 LGTVB_TARGETS_FILE="$SB/targets" \
     LGTVB_RULES_RETRY=3 LGTVB_RULES_RETRY_SLEEP=0 \
+    LGTVB_PROC_TCP="$SB/proc_tcp" LGTVB_CANARY_EVERY=1 \
     TEST_LOG="$TEST_LOG" TEST_IPT_STATE="$TEST_IPT_STATE" \
     TEST_DNSQ_NAME_RC="$TEST_DNSQ_NAME_RC" TEST_DNSQ_SERVER_RC="$TEST_DNSQ_SERVER_RC" \
     TEST_DNSQ_RC="$DNSQ_RC" TEST_LUNA_FILE="${TEST_LUNA_FILE:-}" \
@@ -369,6 +374,7 @@ run_bg() {  # run_bg <script> — background supervisor run; sets LAST_BG_PID
     LGTVB_BACKOFF=1 LGTVB_UWAIT_ROUNDS=2 LGTVB_UWAIT_SLEEP=1 LGTVB_GUARD_GRACE=2 \
     LGTVB_RULES_RETRY=3 LGTVB_RULES_RETRY_SLEEP=0 \
     LGTVB_TARGETS_FILE="$SB/targets" \
+    LGTVB_PROC_TCP="$SB/proc_tcp" LGTVB_CANARY_EVERY=1 \
     TEST_LOG="$TEST_LOG" TEST_IPT_STATE="$TEST_IPT_STATE" \
     TEST_DNSQ_NAME_RC="$TEST_DNSQ_NAME_RC" TEST_DNSQ_SERVER_RC="$TEST_DNSQ_SERVER_RC" \
     TEST_DNSQ_RC="$DNSQ_RC" TEST_LUNA_FILE="${TEST_LUNA_FILE:-}" \
@@ -665,6 +671,71 @@ while [ "$n" -lt 50 ]; do
   sleep 0.2; n=$((n+1))
 done
 if [ -n "$gp" ] && [ "$gp" != "$DEAD_PID" ] && kill -0 "$gp" 2>/dev/null; then ok "keeper restarts dead guard: new live guard"; else no "keeper restarts dead guard: new live guard" "guard.pid=$gp"; fi
+stop_t4
+
+# ==================== S4 T3: keeper cheap liveness + duplicate guards ====================
+
+# --- S4-T3 Case 1: cheap-death — filter pid ALIVE, listening port gone ---------
+# The dnsq canary would PASS here (stub rc 0), so a declaration of death proves the
+# cheap pid+port probe (not the canary) drove the single-sample dead path.
+new_app_sandbox
+blocked="$(grep -m1 '^=' "$SB/appdir/filter/filter-input.txt" | cut -c2-)"
+printf '%s 2\n' "$blocked" > "$TEST_DNSQ_NAME_RC"
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+start_fake_filter
+printf '  sl  local_address rem_address   st\n' > "$SB/proc_tcp"     # port fixture: NOT listening
+run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
+if wait_for "$SB/state/journal.log" 'keeper-filter-dead restore-first' 100; then ok "keeper cheap-death: declared dead on closed port (alive pid)"; else no "keeper cheap-death: declared dead on closed port (alive pid)" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+# filter-killed is written by the fake filter's watcher (~0.1 s poll) — wait for it
+# before comparing log positions (same pattern as T4 Case 1).
+n=0
+while [ "$n" -lt 100 ] && ! grep -q 'filter-killed' "$TEST_LOG" 2>/dev/null; do sleep 0.1; n=$((n+1)); done
+dell="$(log_line '-t nat -D OUTPUT -j LGTVBLK')"
+killl="$(log_line 'filter-killed')"
+if [ -n "$dell" ] && [ -n "$killl" ] && [ "$dell" -lt "$killl" ]; then ok "keeper cheap-death: rule deletes BEFORE filter kill"; else no "keeper cheap-death: rule deletes BEFORE filter kill" "del=$dell kill=$killl"; fi
+if wait_for "$SB/state/journal.log" 'keeper-recovered' 200; then ok "keeper cheap-death: re-armed + recovered"; else no "keeper cheap-death: re-armed + recovered" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+stop_t4
+
+# --- S4-T3 Case 2: functional death still needs 2 consecutive canary misses -----
+# Port fixture present (cheap probe passes); side-port canary fails. One miss must
+# not be terminal; the second consecutive miss must be. Timing: each canary miss
+# costs 3 attempts x (dnsq spawn + sleep 1) ≈ 4 s, so death cannot occur before
+# ~8 s — the 3 s early check is a safe window, the final wait_for is the proof.
+new_app_sandbox
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+start_fake_filter
+printf '127.0.0.1 1\n' > "$TEST_DNSQ_SERVER_RC"     # side-port canary fails: not listening to queries
+run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
+sleep 3
+if ! jrnl 'keeper-filter-dead'; then ok "keeper 2-miss gate: single canary miss not terminal"; else no "keeper 2-miss gate: single canary miss not terminal" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if wait_for "$SB/state/journal.log" 'keeper-filter-dead restore-first' 200; then ok "keeper 2-miss gate: second consecutive miss declares death"; else no "keeper 2-miss gate: second consecutive miss declares death" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+stop_t4
+
+# --- S4-T3 Case 3: keeper duplicate-exit keeps the ORIGINAL pid -----------------
+# Fake live keeper: `sleep` must NOT be the entire -c script (the shell would
+# tail-exec it and the "keeper" substring would vanish from /proc/<pid>/cmdline,
+# defeating pid_alive's PID-reuse guard); `; :` keeps the shell alive instead.
+new_app_sandbox
+sh -c 'sleep 60; :' keeper-fake-$SB &
+FPID=$!
+echo "$FPID" >> "$SB/state/fake-pids"
+echo "$FPID" > "$SB/state/keeper.pid"
+run_bg keeper.sh
+if wait_for "$SB/state/journal.log" 'keeper-duplicate-exit' 100; then ok "keeper duplicate: second instance exits"; else no "keeper duplicate: second instance exits" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if [ "$(cat "$SB/state/keeper.pid" 2>/dev/null)" = "$FPID" ]; then ok "keeper duplicate: original pid preserved"; else no "keeper duplicate: original pid preserved" "keeper.pid=$(cat "$SB/state/keeper.pid" 2>/dev/null) want=$FPID"; fi
+stop_t4
+
+# --- S4-T3 Case 4: guard duplicate-exit keeps the ORIGINAL pid ------------------
+new_app_sandbox
+sh -c 'sleep 60; :' guard-fake-$SB &
+FPID=$!
+echo "$FPID" >> "$SB/state/fake-pids"
+echo "$FPID" > "$SB/state/guard.pid"
+run_bg guard.sh
+if wait_for "$SB/state/journal.log" 'guard-duplicate-exit' 100; then ok "guard duplicate: second instance exits"; else no "guard duplicate: second instance exits" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if [ "$(cat "$SB/state/guard.pid" 2>/dev/null)" = "$FPID" ]; then ok "guard duplicate: original pid preserved"; else no "guard duplicate: original pid preserved" "guard.pid=$(cat "$SB/state/guard.pid" 2>/dev/null) want=$FPID"; fi
 stop_t4
 
 # ==================== S3 T5: boot.sh reconciler + check.sh schema 2 ====================
