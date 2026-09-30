@@ -861,6 +861,53 @@ if [ ! -d "$SB/state/lock" ]; then ok "boot: stale lock cleared"; else no "boot:
 if wait_for "$SB/state/journal.log" 'keeper-recovered' 100; then ok "boot: pointer=on → keeper re-arms (recovered)"; else no "boot: pointer=on → keeper re-arms (recovered)" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
 stop_t4
 
+# ==================== S4 T2: boot pointer-vs-live reconciliation ====================
+# Journal lines (boot-reconcile …) are asserted with jrnl (journal.log), not chk_log
+# (TEST_LOG = iptables stub log): the plan's chk_log naming does not match the sink.
+
+# --- S4-T2 Case 1: pointer=off + stray chains → guarded cleanup ----------------
+new_app_sandbox
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=off\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+run_app boot.sh
+if jrnl 'boot-reconcile pointer=off stray-rules-found'; then ok "boot-off-stray: stray chains detected"; else no "boot-off-stray: stray chains detected" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if jrnl 'boot-reconcile pointer=off live-cleaned'; then ok "boot-off-stray: stray chains cleaned"; else no "boot-off-stray: stray chains cleaned" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if ! grep -q 'LGTVBLK' "$TEST_IPT_STATE"; then ok "boot-off-stray: both chains removed from ruleset"; else no "boot-off-stray: both chains removed from ruleset" "$(grep 'LGTVBLK' "$TEST_IPT_STATE")"; fi
+stop_t4
+
+# --- S4-T2 Case 2: pointer=off, no stray chains → zero rule-churn --------------
+new_app_sandbox
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=off\n' > "$SB/state/state"
+run_app boot.sh
+if ! jrnl 'stray-rules-found'; then ok "boot-off-clean: no stray-reconcile log"; else no "boot-off-clean: no stray-reconcile log" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if [ ! -s "$TEST_IPT_STATE" ]; then ok "boot-off-clean: ruleset untouched (empty)"; else no "boot-off-clean: ruleset untouched (empty)" "$(cat "$TEST_IPT_STATE")"; fi
+if ! grep -qE ' -D |-F |-X ' "$TEST_LOG" 2>/dev/null; then ok "boot-off-clean: no chain-remove calls recorded"; else no "boot-off-clean: no chain-remove calls recorded" "$(grep -E ' -D |-F |-X ' "$TEST_LOG" | head -3)"; fi
+stop_t4
+
+# --- S4-T2 Case 3: pointer=on → delegated to keeper, supervisors live -----------
+new_app_sandbox
+blocked="$(grep -m1 '^=' "$SB/appdir/filter/filter-input.txt" | cut -c2-)"
+printf '%s 2\n' "$blocked" > "$TEST_DNSQ_NAME_RC"
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+run_app boot.sh
+if jrnl 'boot-reconcile pointer=on delegated=keeper'; then ok "boot-on-delegates: delegation journal"; else no "boot-on-delegates: delegation journal" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+n=0; kp=""
+while [ "$n" -lt 100 ]; do
+  kp=$(cat "$SB/state/keeper.pid" 2>/dev/null || true)
+  if [ -n "$kp" ] && kill -0 "$kp" 2>/dev/null; then break; fi
+  sleep 0.2; n=$((n+1))
+done
+if [ -n "$kp" ] && kill -0 "$kp" 2>/dev/null; then ok "boot-on-delegates: keeper live"; else no "boot-on-delegates: keeper live" "keeper.pid=$kp"; fi
+n=0; gp=""
+while [ "$n" -lt 100 ]; do
+  gp=$(cat "$SB/state/guard.pid" 2>/dev/null || true)
+  if [ -n "$gp" ] && kill -0 "$gp" 2>/dev/null; then break; fi
+  sleep 0.2; n=$((n+1))
+done
+if [ -n "$gp" ] && kill -0 "$gp" 2>/dev/null; then ok "boot-on-delegates: guard live"; else no "boot-on-delegates: guard live" "guard.pid=$gp"; fi
+stop_t4
+
 # ==================== S3 review-fix coverage ====================
 # Fix 1: runtime upstream stamp (template token + materialize substitution).
 # Fix 2: keeper stale-lock recovery, live-lock skip, apply signal trap.
