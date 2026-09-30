@@ -9,6 +9,12 @@ cache = true
 user_name = 'nobody'
 forwarding_rules = '@STATE@/forward-rules.txt'
 blocked_query_response = 'refused'
+# dnscrypt-proxy REQUIRES at least one registered server OR offline_mode=true
+# (forwarding rules do NOT register any server; startup hard-fails with "no
+# servers were found in the configured sources" otherwise). With this setup
+# queries still resolve via forwarding_rules. Do not remove - S4 T7 on-device
+# finding: removing it broke apply with reason=filter-sideport on the G1.
+offline_mode = true
 [blocked_names]
   blocked_names_file = '@STATE@/filter-input.txt'
   log_file = '@STATE@/blocked-names.log'

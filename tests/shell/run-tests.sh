@@ -465,6 +465,10 @@ if chk_log '-I OUTPUT 1 -j LGTVBLK-FILTER'; then ok "apply happy path: filter ju
 if [ ! -e "$SB/state/gaveup" ]; then ok "apply happy path: no gaveup marker"; else no "apply happy path: no gaveup marker" "gaveup exists"; fi
 if grep -q '^\. 192\.168\.179\.1$' "$SB/state/forward-rules.txt" 2>/dev/null; then ok "apply happy path: forward-rules rewritten to learned upstream"; else no "apply happy path: forward-rules rewritten to learned upstream" "$(cat "$SB/state/forward-rules.txt" 2>/dev/null)"; fi
 if ! grep -qF '@' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null && ! grep -q 'sdns://' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null && ! grep -qF '[static]' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; then ok "apply happy path: rendered config token-free (no @, sdns://, [static])"; else no "apply happy path: rendered config token-free (no @, sdns://, [static])" "$(grep -nF '@' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; grep -n 'sdns://\|\[static\]' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null)"; fi
+# S4 T7 regression anchor: dnscrypt-proxy hard-FATALs with 0 registered servers
+# ("None of the servers ... were found in the configured sources") - forwarding
+# rules do NOT count. offline_mode=true is the render-level guard.
+if grep -qx 'offline_mode = true' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; then ok "apply happy path: offline_mode=true rendered (0-server startup guard)"; else no "apply happy path: offline_mode=true rendered (0-server startup guard)" "$(grep -n 'offline_mode' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null || echo 'no offline_mode line')"; fi
 if grep -q '^\. 192\.168\.179\.1$' "$SB/state/forward-rules.txt" 2>/dev/null; then ok "apply happy path: forwarding rules use learned upstream"; else no "apply happy path: forwarding rules use learned upstream" "$(cat "$SB/state/forward-rules.txt" 2>/dev/null)"; fi
 if [ ! -d "$SB/state/lock" ]; then ok "apply happy path: lock released"; else no "apply happy path: lock released" "lock dir present"; fi
 cleanup_app_sandbox
@@ -1005,6 +1009,11 @@ if jrnl 'materialize-fail reason=no-upstream'; then ok "materialize: clear journ
 OUT="$(probe_run materialize 192.168.5.5)"
 if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ] && grep -q '^\. 192\.168\.5\.5$' "$SB/state/forward-rules.txt" 2>/dev/null; then ok "materialize: forward-rules match learned upstream"; else no "materialize: forward-rules match learned upstream" "got [$OUT] $(cat "$SB/state/forward-rules.txt" 2>/dev/null)"; fi
 if ! grep -qF '@' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null && ! grep -q 'sdns://' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null && ! grep -qF '[static]' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; then ok "materialize: rendered config token-free (no @, sdns://, [static])"; else no "materialize: rendered config token-free (no @, sdns://, [static])" "$(grep -nF '@' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; grep -n 'sdns://\|\[static\]' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null)"; fi
+# S4 T7 regression: the render-level guard for the 0-registered-servers FATAL.
+# Render anchor only - the sandbox has no dnscrypt binary; runtime proof is the
+# T7 resume on the G1 (filter starts + canaries resolve/refuse).
+if grep -qx 'offline_mode = true' "$SB/state/dnscrypt-proxy.toml" 2>/dev/null; then ok "materialize: offline_mode=true rendered (0-server startup guard)"; else no "materialize: offline_mode=true rendered (0-server startup guard)" "$(cat "$SB/state/dnscrypt-proxy.toml" 2>/dev/null)"; fi
+if grep -q 'registered server' "$FILTER_SRC/dnscrypt-proxy.toml.template" 2>/dev/null; then ok "template: offline_mode reason comment present"; else no "template: offline_mode reason comment present" "no reason comment in $FILTER_SRC/dnscrypt-proxy.toml.template"; fi
 if ! grep -q '192\.168\.179\.' "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template"; then ok "templates: shipped templates carry no hardcoded IP"; else no "templates: shipped templates carry no hardcoded IP" "$(grep -Hn '192\.168\.179\.' "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template")"; fi
 cleanup_app_sandbox
 
