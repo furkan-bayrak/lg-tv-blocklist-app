@@ -1,0 +1,8 @@
+#!/bin/sh
+# Test stub for node — covers dnsq.sh's production node branch (common.sh dnsq()
+# → dnsq.sh → `exec node dnsq.js`) without real node/DNS. Mirrors dnsq.js's
+# success output format ('rcode=<n> ancount=<n> A=…') and exit code; logs its
+# argv so the suite can assert the branch actually ran.
+[ -n "${TEST_LOG:-}" ] && echo "node $*" >> "$TEST_LOG"
+echo "rcode=0 ancount=1 A=93.184.216.34"
+exit 0

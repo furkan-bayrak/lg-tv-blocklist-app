@@ -18,7 +18,7 @@ syntax-checks and shellchecks them (`.github/workflows/build.yml`).
 | `run-all.sh [outdir]` | Runs F,K,FK,KF,BOTH with an `apply.sh` ON-restore between scenarios. Fails fast on restore failure. |
 | `double-apply.sh [N] [outdir]` | N iterations of `apply` → `apply` → `check` (double-apply + status fidelity); asserts `RESULT=on` twice, `mode=on`, exactly one keeper and one guard. |
 | `spawn-cost.sh [N]` | Coarse per-spawn `node dnsq.js` cost (1 s clock; use N≥20). |
-| `nc-check.sh` | busybox `od`/`nc` availability + live node-hidden fallback probe of `dnsq.sh`. |
+| `nc-check.sh` | Proves the `dnsq.sh` nc fallback engages: reports `node`/`nc`/`od`/`awk` availability, runs `dnsq.sh` through a sanitized node-free PATH of tool symlinks, and exits 0 **only** when the exact ` (nc)` proof marker appears (else prints `NOTE: fallback not exercised` and exits 1 — never a silent pass). `LGTVB_APP` overrides the app path for local dry-runs. |
 | `preflight.sh` | Read-only session snapshot: system, STATE, pids, journal, init.d md5s, iptables, `check.sh`, `/tmp/s4` staging scan. |
 
 ## Usage (on the TV)

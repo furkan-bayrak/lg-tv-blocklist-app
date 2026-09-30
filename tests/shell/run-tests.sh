@@ -291,10 +291,10 @@ BASE_PATH="$PATH"
 new_app_sandbox() {
   SB="$(mktemp -d "$SB_ROOT/sb.XXXXXX")"
   mkdir -p "$SB/appdir/scripts" "$SB/appdir/filter" "$SB/hookdir" "$SB/state" "$SB/bin"
-  cp "$SCRIPTS_SRC/common.sh" "$SCRIPTS_SRC/apply.sh" "$SCRIPTS_SRC/rollback.sh" "$SCRIPTS_SRC/keeper.sh" "$SCRIPTS_SRC/guard.sh" "$SCRIPTS_SRC/check.sh" "$SCRIPTS_SRC/boot.sh" "$SB/appdir/scripts/"
+  cp "$SCRIPTS_SRC/common.sh" "$SCRIPTS_SRC/apply.sh" "$SCRIPTS_SRC/rollback.sh" "$SCRIPTS_SRC/keeper.sh" "$SCRIPTS_SRC/guard.sh" "$SCRIPTS_SRC/check.sh" "$SCRIPTS_SRC/boot.sh" "$SCRIPTS_SRC/dnsq.sh" "$SB/appdir/scripts/"
   cp "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template" "$FILTER_SRC/filter-input.txt" "$SB/appdir/filter/"
-  cp "$STUBBIN/iptables" "$STUBBIN/luna-send" "$STUBBIN/dnsq" "$STUBBIN/fake-dnscrypt-proxy" "$STUBBIN/fake-dnscrypt-proxy-dead" "$SB/bin/"
-  chmod +x "$SB/appdir/scripts/apply.sh" "$SB/appdir/scripts/rollback.sh" "$SB/appdir/scripts/keeper.sh" "$SB/appdir/scripts/guard.sh" "$SB/appdir/scripts/check.sh" "$SB/appdir/scripts/boot.sh" "$SB/bin/iptables" "$SB/bin/luna-send" "$SB/bin/dnsq" "$SB/bin/fake-dnscrypt-proxy" "$SB/bin/fake-dnscrypt-proxy-dead"
+  cp "$STUBBIN/iptables" "$STUBBIN/luna-send" "$STUBBIN/dnsq" "$STUBBIN/node" "$STUBBIN/fake-dnscrypt-proxy" "$STUBBIN/fake-dnscrypt-proxy-dead" "$SB/bin/"
+  chmod +x "$SB/appdir/scripts/apply.sh" "$SB/appdir/scripts/rollback.sh" "$SB/appdir/scripts/keeper.sh" "$SB/appdir/scripts/guard.sh" "$SB/appdir/scripts/check.sh" "$SB/appdir/scripts/boot.sh" "$SB/appdir/scripts/dnsq.sh" "$SB/bin/iptables" "$SB/bin/luna-send" "$SB/bin/dnsq" "$SB/bin/node" "$SB/bin/fake-dnscrypt-proxy" "$SB/bin/fake-dnscrypt-proxy-dead"
   # S4/T3: default "filter listening" fixture for the keeper's cheap probe
   # (port 5335 = 0x14D7, local 127.0.0.1, state 0A = LISTEN). Tests that need
   # "device without the port" overwrite this file after new_app_sandbox.
@@ -312,6 +312,7 @@ new_app_sandbox() {
     '  cmdline_has) shift; cmdline_has "$1" "$2"; echo "rc=$?" ;;' \
     '  ensure) shift; ensure_state; echo "rc=$?" ;;' \
     '  materialize) shift; materialize_config "$1"; echo "rc=$?" ;;' \
+    '  dnsq) shift; dnsq "$@"; echo "rc=$?" ;;' \
     'esac' \
     > "$SB/appdir/scripts/probe.sh"
   chmod +x "$SB/appdir/scripts/probe.sh"
@@ -1281,6 +1282,48 @@ printf '\022\064' > "$SB/nc-short.bin"
 run_dnsq_nc "$SB/nc-short.bin"
 if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q 'TIMEOUT'; then ok "dnsq nc: short response → rc 1 TIMEOUT"; else no "dnsq nc: short response → rc 1 TIMEOUT" "rc=$RC out=[$OUT]"; fi
 cleanup_app_sandbox
+
+# ==================== S4 review fixes (N2, N4) ====================
+
+# --- S4 review N2: production default — no LGTVB_DNSQ override → dnsq.sh → node --
+# Every other case pins LGTVB_DNSQ to the stub; this is the ONE case that runs the
+# real branch selection (common.sh dnsq() → dnsq.sh → `exec node dnsq.js`), with
+# the sandbox's stub node mirroring dnsq.js's output format + exit code. If the
+# node branch were broken (fell through to nc), the stub-argv assert below and the
+# dnsq.js-style output assert both fail — the case is not vacuous.
+new_app_sandbox
+OUT="$(env PATH="$SB/bin:$BASE_PATH" LGTVB_STATE_DIR="$SB/state" LGTVB_DNSQ= TEST_LOG="$TEST_LOG" \
+  "$SH" "$SB/appdir/scripts/probe.sh" dnsq example.com 127.0.0.1 5335 2>&1)"
+RC=$?
+if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -q '^rcode=0 ancount=1 A='; then ok "dnsq node path: dnsq.js-style rcode output"; else no "dnsq node path: dnsq.js-style rcode output" "rc=$RC out=[$OUT]"; fi
+if [ "$(printf '%s\n' "$OUT" | sed -n '$p')" = "rc=0" ]; then ok "dnsq node path: rc 0 passthrough"; else no "dnsq node path: rc 0 passthrough" "out=[$OUT]"; fi
+if grep -q "node .*dnsq\.js example.com 127.0.0.1 5335" "$TEST_LOG"; then ok "dnsq node path: stub node invoked with dnsq.js args"; else no "dnsq node path: stub node invoked with dnsq.js args" "$(grep node "$TEST_LOG" 2>/dev/null | head -2)"; fi
+cleanup_app_sandbox
+
+# --- S4 review N4: LGTVB_CANARY_EVERY=0 must not break the keeper tick ----------
+# run_bg pins the knob to 1; this inline launch sets 0, which pre-clamp made
+# `$((tseq % CANARY_EVERY))` abort the script (division by 0 → keeper dead +
+# stderr noise). Post-clamp the keeper ticks cleanly (modulo against default 6).
+new_app_sandbox
+printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+start_fake_filter
+env PATH="$SB/bin:$BASE_PATH" \
+  LGTVB_STATE_DIR="$SB/state" LGTVB_HOOK_DIR="$SB/hookdir" \
+  LGTVB_DNSQ="$SB/bin/dnsq" LGTVB_FILTER_BIN="$SB/bin/fake-dnscrypt-proxy" \
+  LGTVB_TICK=1 LGTVB_GUARD_TICK=1 LGTVB_BACKOFF=1 LGTVB_UWAIT_ROUNDS=2 LGTVB_UWAIT_SLEEP=1 \
+  LGTVB_GUARD_GRACE=2 LGTVB_RULES_RETRY=3 LGTVB_RULES_RETRY_SLEEP=0 \
+  LGTVB_TARGETS_FILE="$SB/targets" LGTVB_PROC_TCP="$SB/proc_tcp" LGTVB_CANARY_EVERY=0 \
+  TEST_LOG="$TEST_LOG" TEST_IPT_STATE="$TEST_IPT_STATE" \
+  TEST_DNSQ_NAME_RC="$TEST_DNSQ_NAME_RC" TEST_DNSQ_SERVER_RC="$TEST_DNSQ_SERVER_RC" \
+  TEST_DNSQ_RC=0 \
+  "$SH" "$SB/appdir/scripts/keeper.sh" >>"$SB/keeper-zero.out" 2>&1 </dev/null &
+ZPID=$!
+sleep 3.5
+if kill -0 "$ZPID" 2>/dev/null && ! grep -Eq 'division|arithmetic' "$SB/keeper-zero.out"; then ok "CANARY_EVERY=0: keeper ticks clean (clamped)"; else no "CANARY_EVERY=0: keeper ticks clean (clamped)" "alive=$(kill -0 "$ZPID" 2>/dev/null && echo yes || echo no) out=[$(head -3 "$SB/keeper-zero.out" 2>/dev/null | tr '\n' ' ')]"; fi
+if jrnl 'keeper-start' && ! jrnl 'keeper-filter-dead'; then ok "CANARY_EVERY=0: start logged, no spurious dead path"; else no "CANARY_EVERY=0: start logged, no spurious dead path" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+KEEPER_PID=$ZPID
+stop_t4
 
 # --- Summary -----------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
