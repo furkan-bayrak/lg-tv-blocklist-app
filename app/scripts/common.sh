@@ -36,6 +36,9 @@ RULES_RETRY_SLEEP=${LGTVB_RULES_RETRY_SLEEP:-2}
 # Cheap probe passed → run the expensive functional canary every CANARY_EVERY ticks
 # (≥1; 1 = every tick). Default 6 ≈ 30 s at TICK=5.
 CANARY_EVERY=${LGTVB_CANARY_EVERY:-6}
+# Clamp ≥1: 0/non-numeric would make $((tseq % CANARY_EVERY)) a fatal arithmetic
+# error in the keeper tick; fall back to the default instead.
+[ "$CANARY_EVERY" -gt 0 ] 2>/dev/null || CANARY_EVERY=6
 # All knobs: numeric only, no leading zeros (busybox ash $(( )) treats 08 as octal → error).
 CAP=none
 
