@@ -28,8 +28,8 @@ jobs:
 
       - name: Check LF line endings in shell scripts and filter assets
         run: |
-          if grep -rIl $'\r' app/scripts tests/shell app/filter; then
-            echo "::error::CRLF detected in app/scripts, tests/shell or app/filter — commit with LF (see .gitattributes)"
+          if grep -rIl $'\r' app/scripts tests/shell tests/g1 app/filter; then
+            echo "::error::CRLF detected in app/scripts, tests/shell, tests/g1 or app/filter — commit with LF (see .gitattributes)"
             exit 1
           fi
 
@@ -37,7 +37,7 @@ jobs:
         run: npm run build && npm run check:es5
 
       - name: Shellcheck (POSIX mode) on shell glue
-        run: shellcheck -s sh -S warning app/scripts/*.sh tests/shell/*.sh tests/shell/stub-bin/*
+        run: shellcheck -s sh -S warning app/scripts/*.sh tests/shell/*.sh tests/shell/stub-bin/* tests/g1/*.sh
 
       - name: Unit tests (status parser + bridge gate)
         run: npm run test:ts
