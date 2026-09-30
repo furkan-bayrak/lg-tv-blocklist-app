@@ -1258,6 +1258,36 @@ if ! grep -q 'filter-start' "$TEST_LOG" 2>/dev/null; then ok "B-budget: filter n
 if chk_state '^pointer=off$' && [ -f "$SB/state/gaveup" ]; then ok "B-budget: pointer=off + gaveup marker"; else no "B-budget: pointer=off + gaveup marker" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
 stop_t4
 
+# ==================== S4 T4: dnsq.sh nc fallback (node-optional canaries) ====================
+
+run_dnsq_nc() {  # run_dnsq_nc <response-file> [name] [server] [port]
+  SB_NC="$(mktemp -d "$SB_ROOT/nc.XXXXXX")"
+  printf '#!/bin/sh\ncat "$NC_RESPONSE_FILE"\n' > "$SB_NC/nc"
+  chmod +x "$SB_NC/nc"
+  export NC_RESPONSE_FILE="$1"
+  OUT="$(env PATH="$SB_NC:/usr/bin:/bin" NC_RESPONSE_FILE="$1" sh "$SCRIPTS_SRC/dnsq.sh" "${2:-example.com}" "${3:-127.0.0.1}" "${4:-53}" 2>&1)"
+  RC=$?
+}
+
+new_app_sandbox
+# NOERROR: flags-high 0x80 (byte index 3 via od $4) → rcode 0
+printf '\022\064\200\200\000\001\000\000\000\000\000\000' > "$SB/nc-noerror.bin"
+run_dnsq_nc "$SB/nc-noerror.bin"
+if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -q 'rcode=0'; then ok "dnsq nc: NOERROR fixture → rc 0 rcode=0"; else no "dnsq nc: NOERROR fixture → rc 0 rcode=0" "rc=$RC out=[$OUT]"; fi
+# REFUSED: flags-high 0x85 → rcode 5
+printf '\022\064\200\205\000\001\000\000\000\000\000\000' > "$SB/nc-refused.bin"
+run_dnsq_nc "$SB/nc-refused.bin"
+if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -q 'rcode=5'; then ok "dnsq nc: REFUSED fixture → rc 2 rcode=5"; else no "dnsq nc: REFUSED fixture → rc 2 rcode=5" "rc=$RC out=[$OUT]"; fi
+# empty response → timeout
+: > "$SB/nc-empty.bin"
+run_dnsq_nc "$SB/nc-empty.bin"
+if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q 'TIMEOUT'; then ok "dnsq nc: empty response → rc 1 TIMEOUT"; else no "dnsq nc: empty response → rc 1 TIMEOUT" "rc=$RC out=[$OUT]"; fi
+# 2-byte short response (no byte index 3) → timeout, not a bogus rcode
+printf '\022\064' > "$SB/nc-short.bin"
+run_dnsq_nc "$SB/nc-short.bin"
+if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q 'TIMEOUT'; then ok "dnsq nc: short response → rc 1 TIMEOUT"; else no "dnsq nc: short response → rc 1 TIMEOUT" "rc=$RC out=[$OUT]"; fi
+cleanup_app_sandbox
+
 # --- Summary -----------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 if [ "$fail" -ne 0 ]; then

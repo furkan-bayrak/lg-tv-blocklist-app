@@ -180,7 +180,7 @@ upstream_learn() {
 }
 
 dnsq() {
-  if [ -n "$LGTVB_DNSQ" ]; then "$LGTVB_DNSQ" "$@"; else node "$SELF_DIR/dnsq.js" "$@"; fi
+  if [ -n "$LGTVB_DNSQ" ]; then "$LGTVB_DNSQ" "$@"; else "$SELF_DIR/dnsq.sh" "$@"; fi
 }
 canary_sideport() {
   n=0
