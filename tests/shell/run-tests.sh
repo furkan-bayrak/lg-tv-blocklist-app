@@ -313,6 +313,7 @@ new_app_sandbox() {
     '  ensure) shift; ensure_state; echo "rc=$?" ;;' \
     '  materialize) shift; materialize_config "$1"; echo "rc=$?" ;;' \
     '  dnsq) shift; dnsq "$@"; echo "rc=$?" ;;' \
+    '  uwait) printf "%s %s\n" "$UWAIT_ROUNDS" "$UWAIT_SLEEP" ;;' \
     'esac' \
     > "$SB/appdir/scripts/probe.sh"
   chmod +x "$SB/appdir/scripts/probe.sh"
@@ -327,10 +328,13 @@ new_app_sandbox() {
 }
 
 run_app() {  # run_app <script-name>; sets OUT + RC (env-only, no args to scripts)
+  # UWAIT pins (same pair as run_bg): boot.sh-spawned keepers inherit this list, so
+  # keep the wait budget fast + independent of the shipped default.
   OUT="$(env PATH="$SB/bin:$BASE_PATH" \
     LGTVB_STATE_DIR="$SB/state" LGTVB_HOOK_DIR="$SB/hookdir" \
     LGTVB_DNSQ="$SB/bin/dnsq" LGTVB_FILTER_BIN="$SB/bin/fake-dnscrypt-proxy" \
     LGTVB_TICK=1 LGTVB_GUARD_TICK=1 LGTVB_TARGETS_FILE="$SB/targets" \
+    LGTVB_UWAIT_ROUNDS=2 LGTVB_UWAIT_SLEEP=1 \
     LGTVB_RULES_RETRY=3 LGTVB_RULES_RETRY_SLEEP=0 \
     LGTVB_PROC_TCP="$SB/proc_tcp" LGTVB_CANARY_EVERY=1 \
     TEST_LOG="$TEST_LOG" TEST_IPT_STATE="$TEST_IPT_STATE" \
@@ -1332,6 +1336,91 @@ sleep 3.5
 if kill -0 "$ZPID" 2>/dev/null && ! grep -Eq 'division|arithmetic' "$SB/keeper-zero.out"; then ok "CANARY_EVERY=0: keeper ticks clean (clamped)"; else no "CANARY_EVERY=0: keeper ticks clean (clamped)" "alive=$(kill -0 "$ZPID" 2>/dev/null && echo yes || echo no) out=[$(head -3 "$SB/keeper-zero.out" 2>/dev/null | tr '\n' ' ')]"; fi
 if jrnl 'keeper-start' && ! jrnl 'keeper-filter-dead'; then ok "CANARY_EVERY=0: start logged, no spurious dead path"; else no "CANARY_EVERY=0: start logged, no spurious dead path" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
 KEEPER_PID=$ZPID
+stop_t4
+
+# ==================== 0.4.2: keeper upstream-wait budget (Leg R fix) ====================
+# Leg R (S4 T8) field finding: after an AP return, G1's WLAN rejoin took ~6-7 min
+# (kernel scan cadence ~4 min), overshooting the old 12 x 10 s = 120 s budget, so the
+# keeper hit terminal-giveup before the path returned. The shipped default is now
+# 90 x 10 s = 15 min. The cases below pin BOTH ends: the old budget must still give
+# up (non-vacuous baseline for the recovery case), the new default must recover.
+
+write_late_luna_stub() {  # installs a self-flipping luna-send in this sandbox:
+  # getStatus calls 1..LUNA_FAIL_CALLS report no usable dns1 (path down); from call
+  # LUNA_FAIL_CALLS+1 on, a valid upstream. Call count lands in LUNA_COUNT_FILE.
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'c=$(cat "$LUNA_COUNT_FILE" 2>/dev/null || echo 0)' \
+    'c=$((c+1))' \
+    'printf "%s\n" "$c" > "$LUNA_COUNT_FILE"' \
+    '[ -n "${TEST_LOG:-}" ] && echo "luna-send $*" >> "$TEST_LOG"' \
+    'if [ "$c" -gt "$LUNA_FAIL_CALLS" ]; then cat "$LUNA_OK_FILE"; else cat "$LUNA_DOWN_FILE"; fi' \
+    'exit 0' \
+    > "$SB/bin/luna-send"
+  chmod +x "$SB/bin/luna-send"
+  printf '{"returnValue":true,"dns1":"","dns2":""}\n' > "$SB/luna-down.json"
+  printf '{"returnValue":true,"dns1":"192.168.5.5","dns2":"192.168.9.1"}\n' > "$SB/luna-ok.json"
+}
+
+launch_upwait_keeper() {  # launch_upwait_keeper <rounds|default> <label>
+  # Inline on purpose (run_bg pins LGTVB_UWAIT_ROUNDS=2): only the shipped default
+  # or the explicit old-budget override may reach the keeper. UWAIT_SLEEP=1 keeps
+  # the run fast; the budget is counted in rounds, so the sleep is timing-only.
+  (
+    export PATH="$SB/bin:$BASE_PATH" \
+      LGTVB_STATE_DIR="$SB/state" LGTVB_HOOK_DIR="$SB/hookdir" \
+      LGTVB_DNSQ="$SB/bin/dnsq" LGTVB_FILTER_BIN="$SB/bin/fake-dnscrypt-proxy" \
+      LGTVB_TICK=1 LGTVB_GUARD_TICK=1 LGTVB_BACKOFF=1 LGTVB_UWAIT_SLEEP=1 LGTVB_GUARD_GRACE=2 \
+      LGTVB_RULES_RETRY=3 LGTVB_RULES_RETRY_SLEEP=0 \
+      LGTVB_TARGETS_FILE="$SB/targets" LGTVB_PROC_TCP="$SB/proc_tcp" LGTVB_CANARY_EVERY=1 \
+      TEST_LOG="$TEST_LOG" TEST_IPT_STATE="$TEST_IPT_STATE" \
+      TEST_DNSQ_NAME_RC="$TEST_DNSQ_NAME_RC" TEST_DNSQ_SERVER_RC="$TEST_DNSQ_SERVER_RC" \
+      TEST_DNSQ_RC=0 \
+      LUNA_COUNT_FILE="$SB/luna-count" LUNA_FAIL_CALLS=15 \
+      LUNA_OK_FILE="$SB/luna-ok.json" LUNA_DOWN_FILE="$SB/luna-down.json"
+    [ "$1" = "default" ] || export LGTVB_UWAIT_ROUNDS="$1"
+    exec "$SH" "$SB/appdir/scripts/keeper.sh"
+  ) >>"$SB/keeper-$2.out" 2>&1 </dev/null &
+  KEEPER_PID=$!
+}
+
+upwait_setup() {  # fresh sandbox, path down + no filter → keeper enters the wait loop
+  new_app_sandbox
+  printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
+  seed_rules 192.168.179.1
+  blocked="$(grep -m1 '^=' "$SB/appdir/filter/filter-input.txt" | cut -c2-)"
+  printf '%s 2\n' "$blocked" > "$TEST_DNSQ_NAME_RC"
+  write_late_luna_stub
+}
+
+# --- direct default anchor (probe env carries no UWAIT override) ---------------
+new_app_sandbox
+OUT="$(probe_run uwait)"
+if [ "$OUT" = "90 10" ]; then ok "upstream budget default: 90 rounds x 10 s = 15 min"; else no "upstream budget default: 90 rounds x 10 s = 15 min" "got [$OUT]"; fi
+cleanup_app_sandbox
+
+# --- same late-return scenario at the OLD budget: terminal give-up reproduced --
+upwait_setup
+launch_upwait_keeper 12 old
+if wait_for "$SB/state/journal.log" 'terminal-giveup reason=upstream-wait-timeout' 300; then ok "upstream budget old(12): terminal give-up before the late return"; else no "upstream budget old(12): terminal give-up before the late return" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+lc="$(cat "$SB/luna-count" 2>/dev/null || echo 0)"
+if [ "$lc" = "12" ]; then ok "upstream budget old(12): exactly 12 wait attempts (budget consumed)"; else no "upstream budget old(12): exactly 12 wait attempts (budget consumed)" "luna calls=$lc"; fi
+if ! jrnl 'keeper-recovered'; then ok "upstream budget old(12): no recovery (late path never seen)"; else no "upstream budget old(12): no recovery (late path never seen)" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if chk_state '^pointer=off$' && [ -f "$SB/state/gaveup" ]; then ok "upstream budget old(12): fail-open (pointer off + gaveup)"; else no "upstream budget old(12): fail-open (pointer off + gaveup)" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+stop_t4
+
+# --- same late-return scenario at the SHIPPED default: recovers -----------------
+# Non-vacuous: the luna stub yields an upstream only on call 16 (> the old 12),
+# and the old-budget case above proves this scenario gave up before the fix.
+upwait_setup
+launch_upwait_keeper default new
+if wait_for "$SB/state/journal.log" 'keeper-recovered' 400; then ok "upstream budget new(default): recovered after the late path return"; else no "upstream budget new(default): recovered after the late path return" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+lc="$(cat "$SB/luna-count" 2>/dev/null || echo 0)"
+if [ "${lc:-0}" -ge 16 ] 2>/dev/null; then ok "upstream budget new(default): waited past the old 12-round budget (calls=$lc)"; else no "upstream budget new(default): waited past the old 12-round budget (calls=$lc)" "luna calls=$lc"; fi
+if ! jrnl 'terminal-giveup'; then ok "upstream budget new(default): no terminal give-up"; else no "upstream budget new(default): no terminal give-up" "$(grep terminal-giveup "$SB/state/journal.log")"; fi
+if chk_state '^upstream=192\.168\.5\.5$' && chk_state '^pointer=on$' && [ ! -e "$SB/state/gaveup" ]; then ok "upstream budget new(default): converged (new upstream, pointer on, no gaveup)"; else no "upstream budget new(default): converged (new upstream, pointer on, no gaveup)" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+run_app check.sh
+if printf '%s\n' "$OUT" | grep -q '^mode=on$'; then ok "upstream budget new(default): check.sh mode=on"; else no "upstream budget new(default): check.sh mode=on" "OUT: $(printf '%s\n' "$OUT" | tr '\n' ' ')"; fi
 stop_t4
 
 # --- Summary -----------------------------------------------------------------
