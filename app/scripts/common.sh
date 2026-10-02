@@ -28,7 +28,11 @@ RULES_FLT=LGTVBLK-FILTER
 TICK=${LGTVB_TICK:-5}
 GUARD_TICK=${LGTVB_GUARD_TICK:-10}
 BACKOFF=${LGTVB_BACKOFF:-4}
-UWAIT_ROUNDS=${LGTVB_UWAIT_ROUNDS:-12}
+# Leg R (S4 T8, 2026-10-01): after an AP return, G1's WLAN rejoin took 5-7 min
+# (kernel scan cadence ~4 min), overshooting the old 12-round budget. 90 x 10 s
+# = 15 min so a real outage auto-recovers once the path returns; the bounded
+# terminal still fires for longer outages (fail-open by design).
+UWAIT_ROUNDS=${LGTVB_UWAIT_ROUNDS:-90}
 UWAIT_SLEEP=${LGTVB_UWAIT_SLEEP:-10}
 GUARD_GRACE=${LGTVB_GUARD_GRACE:-6}
 RULES_RETRY=${LGTVB_RULES_RETRY:-3}
