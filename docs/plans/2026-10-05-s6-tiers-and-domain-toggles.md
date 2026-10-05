@@ -61,7 +61,9 @@ Every commit is revertible on its own. State rollback: delete $STATE/overrides.t
 
 ## Range size (review F6)
 
-`git log --oneline origin/main..HEAD | wc -l` = **30** at the end of this review round (origin/main = `b61f3a0`, unchanged: nothing here was pushed and no commit was rewritten). The count is worth writing down because a note from an earlier round said 37: the review round for T4-T6 reviewed 25 commits (2f29832..847389f, i.e. the S6a round's 21 plus T4/T5/T6's 4), and this round added the 5 fixes F1-F5 (8a91921..57382b6), which is 25 + 5 = 30. "37" appears nowhere in this repository; it was an out-of-tree note.
+Counted against a named commit, because a commit cannot state its own final count: `git log --oneline origin/main..57382b6 | wc -l` = **30** - the branch with the five fixes this round added for F1-F5 (`8a91921`, `c5af906`, `f97520c`, `49edf14`, `57382b6`) in place. After it come only the docs commits of this note (the one before this one and this one), so the branch is 30 + 2 = **32** commits over `origin/main`, and `git log --oneline origin/main..HEAD | wc -l` is the number to check whenever this is read. `origin/main` = `b61f3a0`, unchanged: nothing was pushed and no commit was rewritten.
+
+The count is worth writing down because a note from an earlier round said 37: the review round for T4-T6 covered 25 commits (range 2f29832..847389f, i.e. the S6a round's 21 - recorded in the S6a build artifact - plus T4/T5/T6's 4), and 25 + 5 = 30 with the fixes in place. "37" appears nowhere in this repository; it was an out-of-tree note.
 
 ## Out of scope
 
