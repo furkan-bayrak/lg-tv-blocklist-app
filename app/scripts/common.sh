@@ -309,6 +309,16 @@ overrides_apply() {  # $1 list file (modified in place), $2 overrides file
   return 0
 }
 
+# The number of blocked_names ENTRIES a list file holds: every line that is
+# neither a comment nor blank. One definition, because two readers have to agree
+# on what "an entry" is: materialize_config refuses to publish a list with none
+# (S6b review F1(b)) and check.sh reports the count to the panel (`entries=`),
+# which is what lets the UI notice a list that materialized to nothing. A missing
+# file counts as 0 — the honest value for a filter input that does not exist yet.
+list_entry_count() {  # $1 list file
+  sed -e '/^#/d' -e '/^$/d' "$1" 2>/dev/null | wc -l | tr -d ' '
+}
+
 materialize_config() {
   up=$1
   if [ -z "$up" ] || ! is_ipv4 "$up"; then
@@ -333,11 +343,29 @@ materialize_config() {
   if [ -z "$mt_list" ]; then
     return 1
   fi
-  cp -f "$mt_list" "$STATE/filter-input.txt" || return 1
-  if ! overrides_apply "$STATE/filter-input.txt" "$OVERRIDES_FILE"; then
+  # S6b review F1(b): build the effective list at a scratch path and publish it
+  # with one mv, only if it holds at least one entry. The in-place copy could
+  # publish a comment-only file (a stored diff that turns every entry off
+  # rendered a 173-byte header): the panel and check.sh would report protection
+  # while the filter blocked nothing, and a caller that fails open had already
+  # lost the previous list. Refusing here leaves the live filter input exactly as
+  # it was, so every caller takes the fail-open path it already has (apply:
+  # RESULT=fail, reason=materialize). No file is published and no scratch file is
+  # left behind. The scratch name carries $$: a keeper-side materialize can
+  # overlap an apply's.
+  mt_tmp="$STATE/filter-input.txt.$$.tmp"
+  cp -f "$mt_list" "$mt_tmp" || { rm -f "$mt_tmp"; return 1; }
+  if ! overrides_apply "$mt_tmp" "$OVERRIDES_FILE"; then
+    rm -f "$mt_tmp"
     log "materialize-fail reason=overrides"
     return 1
   fi
+  if [ "$(list_entry_count "$mt_tmp")" -eq 0 ]; then
+    rm -f "$mt_tmp"
+    log "materialize-fail reason=empty-list"
+    return 1
+  fi
+  mv -f "$mt_tmp" "$STATE/filter-input.txt" || { rm -f "$mt_tmp"; return 1; }
   # Template drift (an unsubstituted token) would leave '@' in a rendered file and
   # the filter would never start; fail here with a clear reason (callers fail open).
   # Generic guard: no legitimate rendered content contains '@' (S4 T5 dropped the
