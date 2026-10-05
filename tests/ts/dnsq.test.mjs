@@ -42,6 +42,23 @@ const PKT_SHORT_HEADER = '1234818000';
 // (d) mode-A blocked answer (template default 'refused'): rcode=5, ANCOUNT=0,
 //     question section present. Must keep parsing exactly as before → exit 2.
 const PKT_REFUSED = '123481850001000000000000' + QUESTION_EXAMPLE_COM;
+// (e) CNAME answer (type 5) with a compressed target name: the line must name
+//     the type instead of falling through to the numeric fallback.
+const PKT_CNAME = '123481800001000100000000' + QUESTION_EXAMPLE_COM + 'c00c000500010000003c0002c00c';
+// (f) CNAME whose RDATA is a compression pointer to its own RDATA offset (0x29):
+//     RDATA is never walked, so a hostile response cannot make the parser loop.
+const PKT_CNAME_RDATA_LOOP = '123481800001000100000000' + QUESTION_EXAMPLE_COM + 'c00c000500010000003c0002c029';
+// (g1) type=1 but RDLENGTH=2 — an illegal A record, not an A address.
+const PKT_A_RDLEN_2 = '123481800001000100000000' + QUESTION_EXAMPLE_COM + 'c00c000100010000003c00020000';
+// (g2) type=1, RDLENGTH=4, but the datagram ends after 2 RDATA bytes: clipped.
+const PKT_A_CLIPPED = '123481800001000100000000' + QUESTION_EXAMPLE_COM + 'c00c000100010000003c00040000';
+// (h) non-A/CNAME answer (AAAA, type 28): the numeric fallback is the honest
+//     report for a type this helper does not decode.
+const PKT_AAAA =
+  '123481800001000100000000' + QUESTION_EXAMPLE_COM + 'c00c001c00010000003c001000000000000000000000000000000000';
+// (i) answer-name label byte 0x40 (the 0x40-0xBF range): not a valid length, so
+//     the walk overshoots the datagram and the line degrades to none.
+const PKT_LABEL_0X40 = '123481800001000100000000' + QUESTION_EXAMPLE_COM + '400102030405060708090a';
 
 // Runs `node dnsq.js <name> 127.0.0.1 <port>` against a stub server that replies
 // with packetHex. Resolves once the child exits, or after killMs with
@@ -139,4 +156,37 @@ test('garbage message (label length runs past the end) terminates with no A= val
 test('message shorter than the header terminates with no NaN in the reported line', async () => {
   const r = await runDnsq(PKT_SHORT_HEADER);
   assertTerminated(r, 'rcode=0 ancount=0 none');
+});
+
+test('CNAME answer (type 5, compressed target) reports CNAME, not a numeric type', async () => {
+  const r = await runDnsq(PKT_CNAME);
+  assertTerminated(r, 'rcode=0 ancount=1 CNAME');
+  assert.equal(r.code, 0, 'a CNAME answer is still NOERROR');
+});
+
+test('CNAME RDATA holding a self-referential compression pointer cannot loop the parser', async () => {
+  const r = await runDnsq(PKT_CNAME_RDATA_LOOP);
+  assertTerminated(r, 'rcode=0 ancount=1 CNAME');
+  assert.equal(r.code, 0);
+});
+
+test('A record whose RDATA is not 4 bytes (illegal or clipped) reports none, never a type=', async () => {
+  for (const pkt of [PKT_A_RDLEN_2, PKT_A_CLIPPED]) {
+    const r = await runDnsq(pkt);
+    assertTerminated(r, 'rcode=0 ancount=1 none');
+    assert.equal(r.code, 0, 'a malformed answer is not an rcode error — callers key on rc');
+    assert.ok(!r.stdout.includes('type='), 'type= would claim the record is some other type');
+  }
+});
+
+test('non-A/CNAME answer type is still reported numerically (AAAA → type=28)', async () => {
+  const r = await runDnsq(PKT_AAAA);
+  assertTerminated(r, 'rcode=0 ancount=1 type=28');
+  assert.equal(r.code, 0);
+});
+
+test('answer name with an invalid label length (0x40-0xBF) degrades to none instead of looping', async () => {
+  const r = await runDnsq(PKT_LABEL_0X40);
+  assertTerminated(r, 'rcode=0 ancount=1 none');
+  assert.equal(r.code, 0);
 });

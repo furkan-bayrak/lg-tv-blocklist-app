@@ -35,7 +35,8 @@ sock.on('message', function (msg) {
     if (!ok) { line += ' none'; }
     else {
       var typ = msg[o2] * 256 + msg[o2 + 1], rdlen = msg[o2 + 8] * 256 + msg[o2 + 9], r = o2 + 10;
-      if (typ === 1 && rdlen === 4 && r + 4 <= msg.length) line += ' A=' + msg[r] + '.' + msg[r + 1] + '.' + msg[r + 2] + '.' + msg[r + 3];
+      // Deliberate limit: pointers are followed only at the answer-name position, so a name using one deeper in the record (RDATA, label bytes 0x40-0xBF) degrades to 'none' — no pointer loop is possible.
+      if (typ === 1) line += (rdlen === 4 && r + 4 <= msg.length) ? ' A=' + msg[r] + '.' + msg[r + 1] + '.' + msg[r + 2] + '.' + msg[r + 3] : ' none';
       else if (typ === 5) line += ' CNAME';
       else line += ' type=' + typ;
     }
