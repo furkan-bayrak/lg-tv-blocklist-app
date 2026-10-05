@@ -4,8 +4,10 @@
  *
  * Read this as a conservative PATTERN CHECK plus a masking lexer, NOT an ES5
  * parser: it fails loudly when a construct the oldest engine we claim cannot
- * read appears in a file we ship. The two lists below say exactly what is and
- * is not enforced, so the OK line can be read for what it is.
+ * read appears in a file we ship AND this list can see it. Every miss measured
+ * so far is named below, together with the gate that covers it; the two lists
+ * below say exactly what is and is not enforced, so the OK line can be read for
+ * what it is.
  *
  * Why two trees, both scanned RECURSIVELY (a file one directory down is shipped
  * just the same):
@@ -42,18 +44,29 @@
  *     break for the TV, and they pass this check;
  *   - regex lookbehind `(?<=…)`/`(?<!…)`, the `s`/`y`/`u` flags and `\u{…}u`:
  *     node 8.17 accepts those too, so they are not flagged;
- *   - anything else only a parser can see. `npm run check:node8` closes that
- *     hole for syntax: it runs the REAL node 8 parser over every .js file in
- *     app/js and app/scripts in CI. A real parser cannot be blinded by a regex
- *     literal, so it subsumes the whole class of masker-soundness bugs for
- *     syntax, and this pattern list is left responsible only for the policy
- *     forms the parser accepts.
+ *   - anything else only a parser can see. This list is a heuristic masker over
+ *     masked text, NOT a parser, and it has printed OK for files that were not
+ *     ES5 — measured: `obj.catch(x) / 2; const HIDDEN = 1;` and `obj.catch(x) /
+ *     2; var f = () => 1;` were rc 0 until the masker learned that a control
+ *     keyword after `.` is a property name (`obj.catch` is a call, so the `/`
+ *     after it is division and the rest of the line stops being erased).
+ *     Correctness therefore rests on BOTH gates plus the list above, and neither
+ *     gate subsumes the other:
+ *       - `npm run check:node8` runs the REAL node 8 parser over every .js file
+ *         in app/js and app/scripts in CI. It is ground truth for the syntax node
+ *         8 REFUSES (`--check` rc 1) and blind to the ES5-policy forms, because
+ *         node 8 parses ES6: measured, `var f = () => 1;` is `--check` rc 0;
+ *       - this pattern list carries those policy forms AND the post-ES5 regex
+ *         features `--check` accepts but a compiled literal does not: measured,
+ *         `var re = /(?<ip>\d+)/;` is `--check` rc 0 and a SyntaxError on run.
  *
  * KNOWN FALSE POSITIVES (measured, accepted): a keyword rule matches a keyword
  * used as code, but a legal ES5 identifier or property name can still look like
  * one in an unusual position — `var y = obj.let - 1;` and `var async = 1;` both
- * fail. Biased on purpose: a loud false FAIL is acceptable in this tool, a
- * silent pass is not.
+ * fail. Biased on purpose, and that bias is not a guarantee in the other
+ * direction: a silent pass has happened (the control-keyword property above), so
+ * an OK line means “nothing on this list matched a file the masker could read”,
+ * never “this file is ES5”.
  *
  * Patterns are matched against a masked copy of the source: ONE left-to-right
  * lexer pass blanks the contents of every non-code span — single- and
@@ -93,7 +106,9 @@
  * literal, comment or regex, and any `/` after a token it does not know, fail
  * the file with a clear message — the gate must never print OK for a file it
  * could not read. Backticks stay visible, so template literals are still
- * detected. A false FAIL is acceptable here; a silent pass is not.
+ * detected. That is a bias toward loud failure on INPUT it cannot read, not a
+ * soundness guarantee about the code: the silent passes this checker has
+ * produced are named above, and an OK line means “nothing on this list matched”.
  *
  * Plain-script guard (S3/T7): index.html loads js/bridge.js, js/status.js and
  * js/main.js as plain <script> tags — there is no module loader — so every

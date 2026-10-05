@@ -21,12 +21,18 @@ a real TV (LG G1, webOS 6 — see `docs/test-evidence/`).
 - `app/scripts/` blocking layer — `apply.sh`/`rollback.sh` (apply + rollback),
   `keeper.sh` + `guard.sh` (supervisor pair), plus the bundled filtering engine
 - `tools/check-es5.mjs` — build check: the compiled bundle stays conservative ES5.
-  A pattern scan over a masked copy of `app/js`, `app/scripts` (both walked
-  recursively) plus the `src/` plain-script guard — not an ES5 parser; the header
-  lists what it does and does not enforce
+  A heuristic pattern scan over a masked copy of `app/js`, `app/scripts` (both
+  walked recursively) plus the `src/` plain-script guard — not an ES5 parser: it
+  fails closed on input it cannot read and refuses a control keyword used as a
+  property name, but an OK line means "nothing on the pattern list matched",
+  never "this file is ES5", and the header names the misses measured so far
 - `tools/check-node8.mjs` — `npm run check:node8`: runs the real node v8.17.0 parser
   (`--check`) over every shipped `.js` file, the closest proxy for the TV's node
-  v8.12.0. Ground truth for syntax, so it catches what the pattern list cannot.
+  v8.12.0. Ground truth for the syntax node 8 refuses, and only that: node 8 also
+  parses ES6, so measured `var f = () => 1;` is `--check` rc 0, and a named
+  capture group passes `--check` too and throws only when the literal is
+  compiled. The two gates cover different classes, so CI runs both and neither
+  makes the other redundant.
   It fetches node@8.17.0 from the registry, so it is a CI step rather than part of
   `npm test`; offline, `CHECK_NODE8_ALLOW_SKIP=1` reports UNVERIFIED instead of
   failing (the default is to fail, never to pass silently)

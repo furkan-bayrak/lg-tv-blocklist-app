@@ -381,9 +381,11 @@ test('fail-closed: a `/` the masker cannot classify fails instead of reporting O
 // own `/*` bytes opened a comment span that ran to the next real `*/`.
 //
 // Both positions are lexically ambiguous, so the masker refuses to guess and
-// FAILS CLOSED with an explicit “ambiguous” message. A loud false FAIL is
-// acceptable here; a silent pass is not (real code almost never divides by a
-// function expression).
+// FAILS CLOSED with an explicit “ambiguous” message: on input the masker cannot
+// read, a loud false FAIL beats a guess that silently erases code (real code
+// almost never divides by a function expression). That is a bias on unreadable
+// input, not a soundness guarantee — round 3's control-keyword property above is
+// the counter-example, which is why the guarantee is no longer claimed.
 // ---------------------------------------------------------------------------
 test('fail-closed (B1): a `/` after a function-expression body `}` is ambiguous, not a regex', () => {
   const code = 'var f = function () {} / 2; const HIDDEN = 42; var g = 1 / 3;\n';
