@@ -149,24 +149,62 @@ function scanRegex(source, start) {
   return null;
 }
 
-// A `{` opens a statement/function body after `)`, `;`, another `{`/`}`, `=>`,
-// `else`/`do`/`try`/`finally` or at the start of the input — elsewhere it is an
-// object literal. The distinction only matters for a `/` directly after `}`:
-// statement position opens a regex, expression position is division.
-function braceKind(prev) {
-  if (prev === null) return 'block';
+// The keywords whose `(…)` is a control-statement HEADER: the grammar expects a
+// STATEMENT after the `)`, so a `/` there opens a regex literal. After any
+// other `)` the position is an expression, so `/` is division. Telling these
+// two apart is what stops a regex's own `/*` or `//` bytes from opening a fake
+// comment span that swallows real code (measured: hole B2).
+const CONTROL_HEADERS = new Set(['if', 'while', 'for', 'with', 'catch', 'switch']);
+
+// What opened a `(`. Only the token AFTER the matching `)` depends on it, and
+// 'unknown' is passed on so a following `/` fails closed instead of guessed at.
+//   'header'  if/while/for/with/catch/switch header — statement position after `)`
+//   'params'  a function's parameter list
+//   'call'    f(…), a(…)(…), a[0](…)
+//   'group'    grouping parentheses / arrow parameters
+//   'unknown' the masker cannot tell
+function parenKind(prev) {
+  if (prev === null) return 'group';
+  if (prev.type === 'unknown') return 'unknown';
+  if (prev.type === 'word') {
+    if (CONTROL_HEADERS.has(prev.text)) return 'header';
+    if (prev.text === 'function') return 'params';
+    return 'call';
+  }
   if (prev.type === 'punct') {
-    if (prev.text === ')' || prev.text === ';' || prev.text === '{' || prev.text === '}' || prev.text === '=>') {
-      return 'block';
-    }
+    if (prev.text === ')' || prev.text === ']' || prev.text === '}') return 'call';
+    if (prev.text === '=>') return 'params';
+  }
+  return 'group'; // operators, `(`, `,`, `[`, `:`, `?`, values… all expect an expression
+}
+
+// What opened a `{`. Only a `/` directly after the matching `}` depends on it:
+// after a statement-position `}` that `/` opens a regex literal, after an
+// expression-position `}` it is division. Some closers are genuinely ambiguous
+// — `var f = function () {} / 2` (expression, division) against
+// `function f() {} /re/.test(x)` (statement, regex) — and an ambiguous `}` is
+// reported instead of guessed at, because a wrong guess in the "regex"
+// direction erases code while a wrong guess in the "division" direction lets a
+// regex open a phantom comment.
+//   'stmt'      `;`, `{`, `}`, a control header's `)`, else/do/try/finally, start
+//   'expr'      object literal, an arrow's body `}`
+//   'ambiguous' a function/expression body `}` whose position depends on how the
+//               function is used
+function braceKind(prev) {
+  if (prev === null) return 'stmt';
+  if (prev.type === 'punct') {
+    if (prev.text === ';' || prev.text === '{' || prev.text === '}') return 'stmt';
+    if (prev.text === ')') return prev.paren === 'header' ? 'stmt' : 'ambiguous';
+    if (prev.text === '=>') return 'expr'; // an arrow body is always an expression
+    if (prev.text === ':') return 'ambiguous'; // object value, ternary or `case x: {`
   }
   if (
     prev.type === 'word' &&
     (prev.text === 'else' || prev.text === 'do' || prev.text === 'try' || prev.text === 'finally')
   ) {
-    return 'block';
+    return 'stmt';
   }
-  return 'object';
+  return 'expr';
 }
 
 // The single masking pass. Returns the masked text (same length, same line
@@ -176,7 +214,8 @@ function maskSource(source) {
   const masked = source.split('');
   const errors = [];
   const braces = [];
-  let prev = null; // the previous significant token: { type, text } or null
+  const parens = [];
+  let prev = null; // the previous significant token: { type, text, … } or null
   let i = 0;
 
   function blank(from, to) {
@@ -189,16 +228,32 @@ function maskSource(source) {
     errors.push(message + ' at offset ' + offset);
   }
 
-  // Value position opens a regex literal; expression position means division.
-  // `null` = the masker cannot tell, which must fail closed.
-  function regexAllowed() {
+  // Value position opens a regex literal, expression position means division. A
+  // STRING return value is the reason the masker cannot tell the two apart, and
+  // those positions fail closed: classifying a regex as division lets its `/*`
+  // or `//` bytes open a phantom comment that swallows real code, while
+  // classifying a division as a regex lets the "body" swallow to the next `/`.
+  function regexMode() {
     if (prev === null) return true;
     if (prev.type === 'value') return false;
-    if (prev.type === 'unknown') return null;
+    if (prev.type === 'unknown') {
+      return (
+        'cannot classify this "/" (previous token ' + JSON.stringify(prev.text) + ' is not known ES5 syntax)'
+      );
+    }
     if (prev.type === 'word') return VALUE_KEYWORDS.has(prev.text);
-    if (prev.text === ')' || prev.text === ']') return false;
+    if (prev.text === ')') {
+      if (prev.paren === 'header') return true; // `if (x) /re/.test(y);` — statement position
+      if (prev.paren === 'call' || prev.paren === 'params' || prev.paren === 'group') return false;
+      return 'ambiguous / after )';
+    }
+    if (prev.text === ']') return false;
     if (prev.text === '++' || prev.text === '--') return false;
-    if (prev.text === '}') return prev.brace !== 'object';
+    if (prev.text === '}') {
+      if (prev.brace === 'stmt') return true;
+      if (prev.brace === 'expr') return false;
+      return 'ambiguous / after }';
+    }
     return true;
   }
 
@@ -258,14 +313,14 @@ function maskSource(source) {
     }
 
     if (ch === '/') {
-      const allowed = regexAllowed();
-      if (allowed === null) {
-        fail('cannot classify this "/" (previous token ' + JSON.stringify(prev.text) + ' is not known ES5 syntax)', i);
+      const mode = regexMode();
+      if (typeof mode === 'string') {
+        fail(mode, i);
         i += 1;
         prev = { type: 'punct', text: '/' };
         continue;
       }
-      if (allowed) {
+      if (mode) {
         const regex = scanRegex(source, i);
         if (regex === null) {
           fail('unterminated regular expression', i);
@@ -309,8 +364,14 @@ function maskSource(source) {
     }
     if (punct === '{') {
       braces.push(braceKind(prev));
+    } else if (punct === '(') {
+      parens.push(parenKind(prev));
+    } else if (punct === ')') {
+      prev = { type: 'punct', text: ')', paren: parens.length > 0 ? parens.pop() : 'unknown' };
+      i += 1;
+      continue;
     } else if (punct === '}') {
-      prev = { type: 'punct', text: '}', brace: braces.length > 0 ? braces.pop() : 'block' };
+      prev = { type: 'punct', text: '}', brace: braces.length > 0 ? braces.pop() : 'ambiguous' };
       i += 1;
       continue;
     }

@@ -267,6 +267,85 @@ test('fail-closed: a `/` the masker cannot classify fails instead of reporting O
   assert.match(r.stderr, /cannot classify/);
 });
 
+// ---------------------------------------------------------------------------
+// Round 2, hole B: two measured routes printed OK while hiding constructs the
+// checker catches everywhere else.
+//
+// B1 — `var f = function () {} / 2; const HIDDEN = 42; var g = 1 / 3;` was rc 0.
+// The `}` closing a function-expression body was classified as a statement
+// block, so the division `/` opened a regex literal that swallowed the rest of
+// the line — HIDDEN included (the same route also hid `var v = x?.y;` and
+// `var n = 1_000;`).
+//
+// B2 — `if (x) /[/*]/.test(y); const AFTER = 1;` was rc 0 (and so was the
+// `/[//]/` variant): a `/` after *any* `)` was called division, so the regex's
+// own `/*` bytes opened a comment span that ran to the next real `*/`.
+//
+// Both positions are lexically ambiguous, so the masker refuses to guess and
+// FAILS CLOSED with an explicit “ambiguous” message. A loud false FAIL is
+// acceptable here; a silent pass is not (real code almost never divides by a
+// function expression).
+// ---------------------------------------------------------------------------
+test('fail-closed (B1): a `/` after a function-expression body `}` is ambiguous, not a regex', () => {
+  const code = 'var f = function () {} / 2; const HIDDEN = 42; var g = 1 / 3;\n';
+  const r = runChecker({ ...baseFiles(), 'app/js/main.js': code });
+  assert.equal(r.status, 1, `expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+  assert.match(r.stderr, /ambiguous \/ after \} at offset \d+/);
+  assert.match(r.stderr, /contains const/, 'the construct the old route erased must be reported');
+});
+
+test('fail-closed (B1): the same route must not hide `?.` or a numeric separator', () => {
+  for (const [hidden, expected] of [
+    ['var v = x?.y;', /contains optional chaining/],
+    ['var n = 1_000;', /contains numeric separator/],
+  ]) {
+    const r = runChecker({
+      ...baseFiles(),
+      'app/scripts/dnsq.js': `var f = function () {} / 2; ${hidden} var g = 1 / 3;\n`,
+    });
+    assert.equal(r.status, 1, `expected rc 1 for ${hidden} (stdout=${r.stdout})`);
+    assert.match(r.stderr, /ambiguous \/ after \}/, `stderr=${r.stderr}`);
+    assert.match(r.stderr, expected, `expected ${expected}, stderr=${r.stderr}`);
+  }
+});
+
+test('fail-closed (B2): a regex layer after an `if (…)` header cannot hide const', () => {
+  const code = 'if (x) /[/*]/.test(y); const AFTER = 1;\nvar z = 1;\n*/\n';
+  const r = runChecker({ ...baseFiles(), 'app/js/main.js': code });
+  assert.equal(r.status, 1, `expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+  assert.match(r.stderr, /contains const/, `stderr=${r.stderr}`);
+});
+
+test('fail-closed (B2): the `/[//]/` variant fails in both trees', () => {
+  for (const target of ['app/js/main.js', 'app/scripts/dnsq.js']) {
+    const r = runChecker({ ...baseFiles(), [target]: 'if (x) /[//]/.test(y); const AFTER = 1;\n' });
+    assert.equal(r.status, 1, `${target}: expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+    assert.match(r.stderr, /contains const/, `${target}: stderr=${r.stderr}`);
+  }
+});
+
+test('a `/` after any control header `)` is statement position: if/while/for/with/catch/switch', () => {
+  for (const header of ['if (x)', 'while (x)', 'for (;x;)', 'with (x)', 'catch (x)', 'switch (x)']) {
+    const r = runChecker({ ...baseFiles(), 'app/js/main.js': `${header} /[//]/.test(y); const AFTER = 1;\n` });
+    assert.equal(r.status, 1, `${header}: expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+    assert.match(r.stderr, /contains const/, `${header}: stderr=${r.stderr}`);
+  }
+});
+
+test('fail-closed (B2): a `/` after a `)` of unclassifiable kind fails instead of guessing', () => {
+  const r = runChecker({ ...baseFiles(), 'app/js/main.js': 'var a = 1 @ (x) / 2;\n' });
+  assert.equal(r.status, 1, `expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+  assert.match(r.stderr, /ambiguous \/ after \) at offset \d+/);
+});
+
+test('still passes: a regex after a statement block `}` (block, not expression position)', () => {
+  const r = runChecker({
+    ...baseFiles(),
+    'app/js/main.js': 'if (x) { y(); } /re/.test(x);\n',
+  });
+  assert.equal(r.status, 0, `expected rc 0 (stdout=${r.stdout} stderr=${r.stderr})`);
+});
+
 test('still passes: strings with `//`/`/*` and a regex holding a quote and a slash in a class', () => {
   const r = runChecker({
     ...baseFiles(),
