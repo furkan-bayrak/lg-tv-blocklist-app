@@ -35,7 +35,11 @@ sock.on('message', function (msg) {
     if (!ok) { line += ' none'; }
     else {
       var typ = msg[o2] * 256 + msg[o2 + 1], rdlen = msg[o2 + 8] * 256 + msg[o2 + 9], r = o2 + 10;
-      // Deliberate limit: pointers are followed only at the answer-name position, so a name using one deeper in the record (RDATA, label bytes 0x40-0xBF) degrades to 'none' — no pointer loop is possible.
+      // Deliberate limit: a compression pointer is never followed — its two
+      // bytes are skipped and the target is never read — so a name that uses one
+      // here, or a length byte in 0x40-0xBF standing in for a label, degrades to
+      // 'none'. Nothing here can spin either: the walks above advance their
+      // offset by at least one byte per step, so they always terminate.
       if (typ === 1) line += (rdlen === 4 && r + 4 <= msg.length) ? ' A=' + msg[r] + '.' + msg[r + 1] + '.' + msg[r + 2] + '.' + msg[r + 3] : ' none';
       else if (typ === 5) line += ' CNAME';
       else line += ' type=' + typ;

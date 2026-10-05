@@ -290,6 +290,22 @@ test(
   }
 );
 
+test('fails when app/js has no .js files instead of printing an empty OK line', () => {
+  const files = baseFiles();
+  delete files['app/js/main.js'];
+  const r = runChecker(files, ['app/js']);
+  assert.equal(r.status, 1, `expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+  assert.match(r.stderr, /FAIL: no \.js files found under app\/js/);
+});
+
+test('fails when src has no .ts files instead of silently skipping the plain-script guard', () => {
+  const files = baseFiles();
+  delete files['src/main.ts'];
+  const r = runChecker(files, ['src']);
+  assert.equal(r.status, 1, `expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+  assert.match(r.stderr, /FAIL: no \.ts files found under src/);
+});
+
 test('fails when app/scripts has no .js files instead of silently skipping it', () => {
   const files = baseFiles();
   delete files['app/scripts/dnsq.js'];

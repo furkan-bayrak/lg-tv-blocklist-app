@@ -390,9 +390,19 @@ function listFilesRecursive(root, suffix) {
   return out;
 }
 
-if (!existsSync(dir)) {
-  console.error('FAIL: ' + dir + ' does not exist — run `npm run build` first.');
-  process.exit(1);
+// One rule for every tree the checker walks: a tree that is missing, or holds
+// none of the files it is supposed to hold, is a FAIL. A gate that passes
+// because the code it guards went away is worse than no gate.
+function filesIn(root, suffix, missingHint, emptyReason, list = null) {
+  if (!existsSync(root)) {
+    console.error('FAIL: ' + root + ' does not exist — ' + missingHint);
+    return [];
+  }
+  const names = list === null ? readdirSync(root).filter((name) => name.endsWith(suffix)) : list(root, suffix);
+  if (names.length === 0) {
+    console.error('FAIL: no ' + suffix + ' files found under ' + root + ' — ' + emptyReason);
+  }
+  return names;
 }
 
 // One scanner for every tree we check: the rule list supplies both its patterns
@@ -418,7 +428,8 @@ function scanTokens(root, names, prefix, tokens, suffix = '') {
 }
 
 let failed = false;
-const checked = readdirSync(dir).filter((name) => name.endsWith('.js'));
+const checked = filesIn(dir, '.js', 'run `npm run build` first.', 'cannot check the webview scripts.');
+if (checked.length === 0) failed = true;
 if (scanTokens(dir, checked, '', patterns)) {
   failed = true;
 }
@@ -429,14 +440,14 @@ if (scanTokens(dir, checked, '', commonJsTokens, ' — app/js must stay plain-sc
 
 // The TV-side scripts are what node v8.12.0 really executes (dnsq.sh execs
 // app/scripts/dnsq.js), so they get the syntax patterns — but never the
-// CommonJS ban, because require() is exactly what these CLIs may use. A missing
-// or empty tree is a failure, not a silent skip: the check must not pass just
-// because the code it guards went away.
-const scriptFiles = existsSync(scriptsDir)
-  ? readdirSync(scriptsDir).filter((name) => name.endsWith('.js'))
-  : [];
+// CommonJS ban, because require() is exactly what these CLIs may use.
+const scriptFiles = filesIn(
+  scriptsDir,
+  '.js',
+  'refusing to pass without the TV-side scripts.',
+  'cannot check the TV-side scripts.'
+);
 if (scriptFiles.length === 0) {
-  console.error('FAIL: no .js files found under ' + scriptsDir + ' — cannot check the TV-side scripts.');
   failed = true;
 } else if (scanTokens(scriptsDir, scriptFiles, scriptsDir + '/', patterns)) {
   failed = true;
@@ -445,11 +456,14 @@ if (scriptFiles.length === 0) {
 // Layer 1 of the plain-script guard: the source itself must never use
 // top-level import/export (tsc would silently switch the output to CommonJS).
 const srcDir = 'src';
-const srcFiles = existsSync(srcDir) ? listFilesRecursive(srcDir, '.ts') : [];
-if (srcFiles.length === 0) {
-  console.error('FAIL: no .ts files found under ' + srcDir + ' — cannot check the plain-script guard.');
-  failed = true;
-}
+const srcFiles = filesIn(
+  srcDir,
+  '.ts',
+  'the plain-script guard would silently skip.',
+  'cannot check the plain-script guard.',
+  listFilesRecursive
+);
+if (srcFiles.length === 0) failed = true;
 for (const file of srcFiles) {
   if (reportMaskErrors(file, file)) failed = true;
   const { text } = masked(file);
