@@ -548,3 +548,113 @@ test('a tree holding only nested .js files counts as non-empty (no false "no .js
   assert.equal(dirty.status, 1, `the nested file must be reported (stdout=${dirty.stdout})`);
   assert.match(dirty.stderr, /FAIL: lib\/deep\.js contains const/);
 });
+
+// ---------------------------------------------------------------------------
+// Round 3, hole A: parenKind() decided "this `(` opens a control header" from
+// the previous word's TEXT alone, without asking whether that word is a real
+// keyword or a PROPERTY NAME. ES5 allows every reserved word as a member name,
+// so `obj.catch(x)` is a call: the `/` after it is division, and reading it as a
+// regex literal erased the rest of the line. Measured against the checker at
+// 6f12c41, in both shipped trees:
+//   obj.catch(x) / 2; const HIDDEN = 1; var g = 1 / 3;   rc 0 — silent pass
+//   obj.catch(x) / 2; var f = () => 1; var g = 1 / 3;    rc 0 — silent pass,
+//     and `npm run check:node8` is rc 0 too: node 8 PARSES an arrow, so the
+//     parser gate cannot see this class at all (measured: bare `var f = () => 1;`
+//     is `node@8.17.0 --check` rc 0);
+//   obj.if(x) / 2;                                       rc 1 — false FAIL
+//     ("unterminated regular expression" on legal ES5 with nothing hidden).
+// One missing test produced both directions, for all six of
+// if/while/for/with/switch/catch and for the object-key form `{if: f}.if(x)`.
+// The same route also hid node-8-FATAL syntax: `obj.catch(x) / 2; var v = a?.b;
+// var g = 1 / 3;` was rc 0 here while the real node v8.17.0 binary refuses the
+// file. A keyword after `.` is never a header, so the fix is one test in
+// parenKind() plus a `member` flag on the word token the masker builds.
+// ---------------------------------------------------------------------------
+const HEADER_KEYWORDS = ['if', 'while', 'for', 'with', 'switch', 'catch'];
+
+test('control-keyword property: the construct behind it is reported, not read as a regex', () => {
+  for (const kw of HEADER_KEYWORDS) {
+    const code = `obj.${kw}(x) / 2; const HIDDEN = 1; var g = 1 / 3;\n`;
+    assertFailsInBothTrees(`obj.${kw}(…)`, code, /contains const/);
+    for (const target of ['app/js/main.js', 'app/scripts/dnsq.js']) {
+      const r = runChecker({ ...baseFiles(), [target]: code });
+      assert.equal(r.status, 1, `${kw}: ${target} must fail (stderr=${r.stderr})`);
+      // The message must name the hidden construct: a regex complaint means the
+      // masking bug is back (that is what "unterminated regular expression" was).
+      assert.match(r.stderr, /contains const/, `${kw}: stderr=${r.stderr}`);
+      assert.doesNotMatch(r.stderr, /unterminated regular expression/, `${kw}: stderr=${r.stderr}`);
+    }
+  }
+});
+
+test('control-keyword property: an arrow function behind it is reported, not swallowed', () => {
+  assertFailsInBothTrees(
+    'obj.catch(…) + arrow',
+    'obj.catch(x) / 2; var f = () => 1; var g = 1 / 3;\n',
+    /contains arrow function/
+  );
+});
+
+test('control-keyword property: `{if: f}.if(x)` and node-8-fatal syntax behind it are reported', () => {
+  for (const [name, code, expected] of [
+    ['object key then member call', '{if: f}.if(x) / 2; const HIDDEN = 1; var g = 1 / 3;\n', /contains const/],
+    [
+      'node-8-fatal optional chaining',
+      'obj.catch(x) / 2; var v = a?.b; var g = 1 / 3;\n',
+      /contains optional chaining/,
+    ],
+  ]) {
+    assertFailsInBothTrees(name, code, expected);
+  }
+});
+
+test('legal ES5: a control keyword as a property name stays clean (was a false FAIL)', () => {
+  for (const kw of HEADER_KEYWORDS) {
+    const code = `obj.${kw}(x) / 2;\n`;
+    const r = runChecker({ ...baseFiles(), 'app/js/main.js': code });
+    assert.equal(r.status, 0, `${JSON.stringify(code)} must pass (stderr=${r.stderr})`);
+    assert.doesNotMatch(r.stderr, /unterminated regular expression/);
+  }
+  for (const code of [
+    '{if: f}.if(x) / 2;\n',
+    'obj.catch(x) / 2; var g = 1 / 3;\n',
+    'x.if(y) / 2 / 3;\n',
+    'var a = obj.catch(x) / 2; var b = a.b.while(y) / 3;\n',
+    "var a = obj['catch'](x) / 2;\n",
+    'var a = a.b.c.for(x) / 2;\n',
+  ]) {
+    const r = runChecker({ ...baseFiles(), 'app/js/main.js': code });
+    assert.equal(r.status, 0, `${JSON.stringify(code)} must pass (stderr=${r.stderr})`);
+  }
+});
+
+test('genuine control headers keep statement position (after ) } ; else do try and a label)', () => {
+  for (const code of [
+    'if (x) if (y) /[/*]/.test(z); var n = 1;\n',
+    'if (x) { } if (y) /[/*]/.test(z); var n = 1;\n',
+    '; if (y) /[/*]/.test(z); var n = 1;\n',
+    'if (a) { } else if (y) /[/*]/.test(z); var n = 1;\n',
+    'do if (y) /[/*]/.test(z); while (0); var n = 1;\n',
+    'do f(); while (y) /[/*]/.test(z); var n = 1;\n',
+    'try { f(); } catch (e) /[/*]/.test(z); var n = 1;\n',
+    'loop: for (;;) /[/*]/.test(z); var n = 1;\n',
+    'outer: while (x) /[/*]/.test(z); var n = 1;\n',
+  ]) {
+    const r = runChecker({ ...baseFiles(), 'app/js/main.js': code });
+    assert.equal(r.status, 0, `statement-position regex must stay legal: ${JSON.stringify(code)} (stderr=${r.stderr})`);
+  }
+  // Round-2 closure: a header regex whose own `/*` would open a phantom comment
+  // must still report the code behind it, in both trees.
+  assertFailsInBothTrees(
+    'header regex cannot hide const',
+    'if (x) /[/*]/.test(y); const AFTER = 1;\nvar z = 1;\n*/\n',
+    /contains const/
+  );
+});
+
+test('division after a call whose callee is a plain identifier stays clean', () => {
+  for (const code of ['f() / 2;\n', 'arr[0] / 2;\n', '(a+b) / 2;\n', '(function(){}) / 2;\n', 'a / b / c;\n']) {
+    const r = runChecker({ ...baseFiles(), 'app/js/main.js': code });
+    assert.equal(r.status, 0, `${JSON.stringify(code)} must pass (stderr=${r.stderr})`);
+  }
+});

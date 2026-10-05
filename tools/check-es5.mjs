@@ -214,6 +214,21 @@ function scanRegex(source, start) {
 // comment span that swallows real code (measured: hole B2).
 const CONTROL_HEADERS = new Set(['if', 'while', 'for', 'with', 'catch', 'switch']);
 
+// True when the previous significant token is `.` (or `?.`), i.e. the next word
+// is a PROPERTY NAME, never a keyword: ES5 allows every reserved word as a
+// member name, and a property name cannot introduce a control statement.
+// Measured (round 3, why this exists): without the test,
+//   obj.catch(x) / 2; const HIDDEN = 1; var g = 1 / 3;   -> was OK, rc 0
+//   obj.catch(x) / 2; var f = () => 1; var g = 1 / 3;    -> was OK, rc 0
+//   obj.if(x) / 2;                     (legal ES5)       -> was rc 1
+// — the property name sent `(` down the control-header branch, the `/` after
+// `)` was read as a regex literal, and that “literal” swallowed the rest of the
+// line, `const` and the arrow included. The keyword-as-property list is exactly
+// the six entries of CONTROL_HEADERS plus the object-key form `{if: f}.if(x)`.
+function isMemberAccess(prev) {
+  return prev !== null && prev.type === 'punct' && (prev.text === '.' || prev.text === '?.');
+}
+
 // What opened a `(`. Only the token AFTER the matching `)` depends on it, and
 // 'unknown' is passed on so a following `/` fails closed instead of guessed at.
 //   'header'  if/while/for/with/catch/switch header — statement position after `)`
@@ -225,8 +240,10 @@ function parenKind(prev) {
   if (prev === null) return 'group';
   if (prev.type === 'unknown') return 'unknown';
   if (prev.type === 'word') {
-    if (CONTROL_HEADERS.has(prev.text)) return 'header';
-    if (prev.text === 'function') return 'params';
+    // A word after `.` is a property name (`obj.if(…)`, `obj.catch(…)`), so its
+    // `(` is a call, not a header: the statement-position rule must not apply.
+    if (!prev.member && CONTROL_HEADERS.has(prev.text)) return 'header';
+    if (!prev.member && prev.text === 'function') return 'params';
     return 'call';
   }
   if (prev.type === 'punct') {
@@ -404,7 +421,9 @@ function maskSource(source) {
     if (isIdentStart(ch)) {
       let j = i + 1;
       while (j < source.length && isIdentPart(source[j])) j += 1;
-      prev = { type: 'word', text: source.slice(i, j) };
+      // `member` is what lets parenKind() tell a header keyword from a property
+      // name; it is recorded here because only the masker sees token order.
+      prev = { type: 'word', text: source.slice(i, j), member: isMemberAccess(prev) };
       i = j;
       continue;
     }
