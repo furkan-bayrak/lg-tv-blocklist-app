@@ -224,18 +224,34 @@ tier_get() {
   esac
 }
 
-# The preset list for a tier. A bundle older than tiers has no
-# filter-input-<tier>.txt; that is not a failure — it is the pre-tier snapshot
-# (the strict list), which is what such a bundle shipped and what its scripts
-# blocked with. Logged once per materialize so the discrepancy is visible in
-# the journal instead of silent.
+# tier_list — resolve the preset list for a tier: a path on stdout, rc 1 =
+# refuse to pick one (materialize then fails and its callers fail open).
+#   both tier files present -> that tier's file (the normal case)
+#   BOTH absent             -> a bundle older than tiers: it ships only the legacy
+#                              filter-input.txt, which IS the strict list (the
+#                              pre-tier snapshot), so that is what such a bundle
+#                              blocked with. Logged, so the fallback stays visible
+#                              in the journal and never silently changes the tier.
+#   exactly ONE absent      -> a partial/damaged install. The legacy file is the
+#                              STRICT list, so the old unconditional fallback made
+#                              a SAFE-state TV run the aggressive list (review F1,
+#                              2026-10-05: 123 entries incl. 8 zone anchors) while
+#                              state, check.sh and the panel all said safe. Refuse
+#                              instead: materialize fails, which every caller
+#                              already handles fail-open (resolver restored), and
+#                              the journal names the reason.
 tier_list() {
   tl_f="$APP_DIR/filter/filter-input-$1.txt"
-  if [ ! -f "$tl_f" ]; then
-    log "materialize-fallback reason=no-tier-file tier=$1"
-    tl_f="$FILTER_INPUT_SRC"
+  if [ -f "$tl_f" ]; then
+    printf '%s\n' "$tl_f"
+    return 0
   fi
-  printf '%s\n' "$tl_f"
+  if [ -f "$APP_DIR/filter/filter-input-safe.txt" ] || [ -f "$APP_DIR/filter/filter-input-strict.txt" ]; then
+    log "materialize-fail reason=partial-tier-files tier=$1"
+    return 1
+  fi
+  log "materialize-fallback reason=no-tier-file tier=$1"
+  printf '%s\n' "$FILTER_INPUT_SRC"
 }
 
 # --- overrides (S6a T2 seam; the writer lands in S6b) ------------------------
@@ -299,7 +315,13 @@ materialize_config() {
   # S6a T2: the ACTIVE TIER's preset list, then the overrides on top. The file
   # this writes keeps the exact pre-tier on-disk format (one dnscrypt-proxy
   # blocked_names entry per line: '=name' exact, bare name whole-zone).
+  # tier_list returns 1 on a partial tier install (it journals the reason); the
+  # materialize must then fail WITHOUT touching the live filter input, so the
+  # previous list stays in place and the caller fails open.
   mt_list=$(tier_list "$(tier_get)")
+  if [ -z "$mt_list" ]; then
+    return 1
+  fi
   cp -f "$mt_list" "$STATE/filter-input.txt" || return 1
   if ! overrides_apply "$STATE/filter-input.txt" "$STATE/overrides.txt"; then
     log "materialize-fail reason=overrides"

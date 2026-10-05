@@ -1102,6 +1102,44 @@ if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input.txt"; the
 if jrnl 'materialize-fallback reason=no-tier-file tier=strict'; then ok "tier fallback: journal line names the missing tier"; else no "tier fallback: journal line names the missing tier" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
 cleanup_app_sandbox
 
+# --- T2 case 3b (review F1): a PARTIAL tier install must never fall back -----
+# The legacy filter-input.txt IS the strict list (123 entries incl. 8 zone
+# anchors). With the old unconditional fallback, deleting the SAFE preset on a
+# SAFE-state TV silently materialized the aggressive list while state, check.sh
+# and the panel all said safe. Exactly one tier file missing = damaged install:
+# materialize must fail (callers fail open) and name the reason in the journal.
+new_app_sandbox
+cp "$FILTER_SRC/filter-input-strict.txt" "$SB/appdir/filter/"   # safe preset missing
+: > "$SB/state/state"                                            # tier unset = safe
+OUT="$(probe_run materialize 192.168.5.5)"
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=1" ]; then ok "tier partial (safe missing): materialize refuses"; else no "tier partial (safe missing): materialize refuses" "got [$OUT]"; fi
+if [ ! -f "$SB/state/filter-input.txt" ]; then ok "tier partial (safe missing): nothing materialized"; else no "tier partial (safe missing): nothing materialized" "$(grep -c . "$SB/state/filter-input.txt") lines"; fi
+if jrnl 'materialize-fail reason=partial-tier-files tier=safe'; then ok "tier partial (safe missing): journal names the reason"; else no "tier partial (safe missing): journal names the reason" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if ! jrnl 'materialize-fallback'; then ok "tier partial (safe missing): no silent strict fallback"; else no "tier partial (safe missing): no silent strict fallback" "$(grep materialize-fallback "$SB/state/journal.log")"; fi
+run_app apply.sh
+assert_result "tier partial (safe missing): apply fails open at materialize" fail materialize
+cleanup_app_sandbox
+
+# mirror case: the STRICT preset is missing while the active tier is strict ----
+new_app_sandbox
+cp "$FILTER_SRC/filter-input-safe.txt" "$SB/appdir/filter/"      # strict preset missing
+printf 'tier=strict\n' > "$SB/state/state"
+OUT="$(probe_run materialize 192.168.5.5)"
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=1" ]; then ok "tier partial (strict missing): materialize refuses"; else no "tier partial (strict missing): materialize refuses" "got [$OUT]"; fi
+if [ ! -f "$SB/state/filter-input.txt" ]; then ok "tier partial (strict missing): nothing materialized"; else no "tier partial (strict missing): nothing materialized" "$(grep -c . "$SB/state/filter-input.txt") lines"; fi
+if jrnl 'materialize-fail reason=partial-tier-files tier=strict'; then ok "tier partial (strict missing): journal names the reason"; else no "tier partial (strict missing): journal names the reason" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+cleanup_app_sandbox
+
+# both tier files missing = a bundle older than tiers: the legacy fallback is
+# still the right answer there (it IS what that bundle shipped and blocked). --
+new_app_sandbox
+: > "$SB/state/state"
+OUT="$(probe_run materialize 192.168.5.5)"
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ]; then ok "tier both-missing: legacy fallback still works"; else no "tier both-missing: legacy fallback still works" "got [$OUT]"; fi
+if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input.txt"; then ok "tier both-missing: legacy single list materialized"; else no "tier both-missing: legacy single list materialized" "diff: $(diff "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input.txt" 2>&1 | head -3)"; fi
+if jrnl 'materialize-fallback reason=no-tier-file tier=safe'; then ok "tier both-missing: fallback logged for the default tier"; else no "tier both-missing: fallback logged for the default tier" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+cleanup_app_sandbox
+
 # --- T2 case 4: garbled / partial tier value → SAFE, never a bogus tier ------
 for bogus in 'tier=aggressive' 'tier=STRICT' 'tier=' 'tier=safe '; do
   tier_sandbox
