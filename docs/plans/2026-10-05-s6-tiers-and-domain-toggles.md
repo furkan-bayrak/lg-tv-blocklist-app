@@ -59,6 +59,10 @@ S6b review fix F5 (2026-10-05): the two ends disagreed on the reason for a junk 
 
 Every commit is revertible on its own. State rollback: delete $STATE/overrides.txt and set `tier` back to `safe` (the app tolerates a missing overrides file by design). The generated lists and domains.json are regenerable from the pinned upstream ref.
 
+## Range size (review F6)
+
+`git log --oneline origin/main..HEAD | wc -l` = **30** at the end of this review round (origin/main = `b61f3a0`, unchanged: nothing here was pushed and no commit was rewritten). The count is worth writing down because a note from an earlier round said 37: the review round for T4-T6 reviewed 25 commits (2f29832..847389f, i.e. the S6a round's 21 plus T4/T5/T6's 4), and this round added the 5 fixes F1-F5 (8a91921..57382b6), which is 25 + 5 = 30. "37" appears nowhere in this repository; it was an out-of-tree note.
+
 ## Out of scope
 
 Fetching lists from the network (S7 owns the update pipeline), firmware-update blocking, per-domain statistics or logging beyond what exists, and any change to tests/g1/** before the T9 window has run.
