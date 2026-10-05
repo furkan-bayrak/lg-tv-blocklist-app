@@ -1,4 +1,4 @@
-// Unit tests for the compiled status-block parser (app/js/status.js), schema 2.
+// Unit tests for the compiled status-block parser (app/js/status.js), schema 3.
 // Run after `npm run build`:  npm run test:ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,7 +28,7 @@ function parse(text) {
 
 const BLOCK = [
   '@@STATUS-BEGIN',
-  'schema=2',
+  'schema=3',
   'ts=1789550329',
   'hook=linked',
   'hook_target=/media/developer/apps/usr/palm/applications/io.github.furkanbayrak.lgtvblocklist/scripts/boot.sh',
@@ -42,6 +42,7 @@ const BLOCK = [
   'mode=on',
   'upstream=192.168.179.1',
   'cap=dnat',
+  'tier=safe',
   '@@STATUS-END'
 ].join('\n');
 
@@ -49,14 +50,14 @@ function withoutKey(key) {
   return BLOCK.split('\n').filter((line) => !line.startsWith(key + '=')).join('\n');
 }
 
-test('parses the schema-2 sample fixture and returns every typed field', () => {
+test('parses the schema-3 sample fixture and returns every typed field', () => {
   const raw = readFileSync(
-    fileURLToPath(new URL('./fixtures/status-schema2-sample.txt', import.meta.url)),
+    fileURLToPath(new URL('./fixtures/status-schema3-sample.txt', import.meta.url)),
     'utf8'
   );
   const block = parse(raw);
   assert.ok(block);
-  assert.equal(block.schema, '2');
+  assert.equal(block.schema, '3');
   assert.equal(block.ts, 1789550329);
   assert.equal(block.hook, 'linked');
   assert.equal(
@@ -73,9 +74,20 @@ test('parses the schema-2 sample fixture and returns every typed field', () => {
   assert.equal(block.mode, 'on');
   assert.equal(block.upstream, '192.168.179.1');
   assert.equal(block.cap, 'dnat');
+  assert.equal(block.tier, 'safe');
 });
 
-test('rejects the old schema-1 G1 capture (schema must be exactly 2)', () => {
+test('rejects the old schema-2 block (stale check.sh → no tier is ever guessed)', () => {
+  const raw = readFileSync(
+    fileURLToPath(new URL('./fixtures/status-schema2-sample.txt', import.meta.url)),
+    'utf8'
+  );
+  // Fail closed: an older IPK's check.sh reports schema 2 and no tier. The panel
+  // must show its unknown/error state rather than a tier it did not parse.
+  assert.equal(parse(raw), null);
+});
+
+test('rejects the old schema-1 G1 capture (schema must be exactly 3)', () => {
   const raw = readFileSync(
     fileURLToPath(new URL('./fixtures/real-block-g1.txt', import.meta.url)),
     'utf8'
@@ -91,12 +103,20 @@ test('rejects a block with the cap key missing', () => {
   assert.equal(parse(withoutKey('cap')), null);
 });
 
+test('rejects a block with the tier key missing', () => {
+  assert.equal(parse(withoutKey('tier')), null);
+});
+
 test('rejects a duplicate key', () => {
   assert.equal(parse(BLOCK.replace('rule=on', 'rule=on\nrule=on')), null);
 });
 
+test('rejects a duplicate tier key', () => {
+  assert.equal(parse(BLOCK.replace('tier=safe', 'tier=safe\ntier=strict')), null);
+});
+
 test('rejects an unknown key', () => {
-  assert.equal(parse(BLOCK.replace('cap=dnat', 'cap=dnat\ntier=x')), null);
+  assert.equal(parse(BLOCK.replace('cap=dnat', 'cap=dnat\nmodel=x')), null);
 });
 
 test('rejects a bad filter enum value', () => {
@@ -105,6 +125,18 @@ test('rejects a bad filter enum value', () => {
 
 test('rejects a bad mode enum value', () => {
   assert.equal(parse(BLOCK.replace('mode=on', 'mode=weird')), null);
+});
+
+test('rejects a bad tier enum value (case matters, no guessing)', () => {
+  assert.equal(parse(BLOCK.replace('tier=safe', 'tier=aggressive')), null);
+  assert.equal(parse(BLOCK.replace('tier=safe', 'tier=SAFE')), null);
+  assert.equal(parse(BLOCK.replace('tier=safe', 'tier=')), null);
+});
+
+test('accepts tier=strict', () => {
+  const block = parse(BLOCK.replace('tier=safe', 'tier=strict'));
+  assert.ok(block);
+  assert.equal(block.tier, 'strict');
 });
 
 test('rejects an out-of-range upstream address', () => {
@@ -163,8 +195,9 @@ test('accepts a shuffled key order (keys are position-independent)', () => {
   const body = lines.slice(1, lines.length - 1).reverse();
   const block = parse([lines[0]].concat(body, [lines[lines.length - 1]]).join('\n'));
   assert.ok(block);
-  assert.equal(block.schema, '2');
+  assert.equal(block.schema, '3');
   assert.equal(block.cap, 'dnat');
+  assert.equal(block.tier, 'safe');
 });
 
 test('accepts hook_target=none and upstream=none', () => {
@@ -185,6 +218,8 @@ test('accepts degraded mode with cap=unsupported', () => {
   assert.ok(block);
   assert.equal(block.mode, 'degraded');
   assert.equal(block.cap, 'unsupported');
+  // Tier is independent of protection state: degraded still reports the tier.
+  assert.equal(block.tier, 'safe');
 });
 
 test('rejects non-string input', () => {

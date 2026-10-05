@@ -22,6 +22,12 @@ FILTER_BIN=${LGTVB_FILTER_BIN:-"$APP_DIR/filter/dnscrypt-proxy"}
 FILTER_TOML_TMPL="$APP_DIR/filter/dnscrypt-proxy.toml.template"
 FORWARD_TMPL="$APP_DIR/filter/forward-rules.txt.template"
 FILTER_INPUT_SRC="$APP_DIR/filter/filter-input.txt"
+# S6a T2: the ACTIVE TIER selects which bundled list is materialized. The key
+# is a root-only state value; anything that is not exactly 'strict' (a missing
+# key, a stale or garbled value) means SAFE — the fresh-install default, and
+# the gentler of the two lists, so an unreadable state can never silently
+# promote the TV to the aggressive tier.
+TIER_DEFAULT=safe
 FILTER_PORT=5335
 RULES_NAT=LGTVBLK
 RULES_FLT=LGTVBLK-FILTER
@@ -208,6 +214,74 @@ canary_blocked() {  # system path (through DNAT); expect rcode!=0 (REFUSED) → 
   [ "$rc" -eq 2 ]
 }
 
+# Active tier: 'safe' | 'strict'. One state lookup, normalized here so every
+# reader (materialize, check.sh) agrees on the value and on the default.
+tier_get() {
+  tg_v=$(state_get tier 2>/dev/null)
+  case $tg_v in
+    safe|strict) printf '%s\n' "$tg_v" ;;
+    *) printf '%s\n' "$TIER_DEFAULT" ;;
+  esac
+}
+
+# The preset list for a tier. A bundle older than tiers has no
+# filter-input-<tier>.txt; that is not a failure — it is the pre-tier snapshot
+# (the strict list), which is what such a bundle shipped and what its scripts
+# blocked with. Logged once per materialize so the discrepancy is visible in
+# the journal instead of silent.
+tier_list() {
+  tl_f="$APP_DIR/filter/filter-input-$1.txt"
+  if [ ! -f "$tl_f" ]; then
+    log "materialize-fallback reason=no-tier-file tier=$1"
+    tl_f="$FILTER_INPUT_SRC"
+  fi
+  printf '%s\n' "$tl_f"
+}
+
+# --- overrides (S6a T2 seam; the writer lands in S6b) ------------------------
+# $STATE/overrides.txt holds one line per domain, keyed by NAME (never by
+# position, so it survives a list update):
+#   +name   force the exact rule '=name' into the effective list
+#   -name   remove whichever entry matches: the exact rule '=name' or the bare
+#           zone anchor 'name'
+# Applied AFTER the preset list is copied, so the preset stays the baseline.
+# An absent or empty file is a no-op. Lines that are neither form, or whose
+# name carries a character outside [a-z0-9._-], are IGNORED, never
+# interpreted: grep takes the name as a fixed string (-F -x), so no override
+# line can ever act as a pattern, and this reader tolerates a file it did not
+# write (the writer re-validates the payload before writing, D13a).
+overrides_apply() {  # $1 list file (modified in place), $2 overrides file
+  oa_ov=$2
+  [ -f "$oa_ov" ] || return 0
+  while IFS= read -r oa_line; do
+    case $oa_line in
+      +*) oa_op=add; oa_name=${oa_line#+} ;;
+      -*) oa_op=del; oa_name=${oa_line#-} ;;
+      *) continue ;;
+    esac
+    [ -n "$oa_name" ] || continue
+    case $oa_name in
+      *[!a-z0-9._-]*) continue ;;
+    esac
+    if [ "$oa_op" = add ]; then
+      # Already an exact rule → nothing to do. A bare zone anchor for the same
+      # name is NOT counted: the plan's override line means the exact entry, and
+      # keeping that literal makes the effective set predictable.
+      grep -F -x -q "=$oa_name" "$1" 2>/dev/null && continue
+      printf '=%s\n' "$oa_name" >> "$1" || return 1
+    else
+      grep -F -x -v -e "=$oa_name" -e "$oa_name" "$1" > "$1.ovtmp" 2>/dev/null
+      oa_rc=$?
+      # 0 = removed something, 1 = nothing matched (still a valid empty/no-op
+      # result); anything else is a real grep error and must not truncate the
+      # list it just read.
+      [ "$oa_rc" -le 1 ] || { rm -f "$1.ovtmp"; return 1; }
+      mv -f "$1.ovtmp" "$1" || return 1
+    fi
+  done < "$oa_ov"
+  return 0
+}
+
 materialize_config() {
   up=$1
   if [ -z "$up" ] || ! is_ipv4 "$up"; then
@@ -222,7 +296,15 @@ materialize_config() {
   fi
   sed "s|@STATE@|$STATE|g" "$FILTER_TOML_TMPL" > "$STATE/dnscrypt-proxy.toml" || return 1
   sed "s|@UPSTREAM@|$up|g" "$FORWARD_TMPL" > "$STATE/forward-rules.txt" || return 1
-  cp -f "$FILTER_INPUT_SRC" "$STATE/filter-input.txt" || return 1
+  # S6a T2: the ACTIVE TIER's preset list, then the overrides on top. The file
+  # this writes keeps the exact pre-tier on-disk format (one dnscrypt-proxy
+  # blocked_names entry per line: '=name' exact, bare name whole-zone).
+  mt_list=$(tier_list "$(tier_get)")
+  cp -f "$mt_list" "$STATE/filter-input.txt" || return 1
+  if ! overrides_apply "$STATE/filter-input.txt" "$STATE/overrides.txt"; then
+    log "materialize-fail reason=overrides"
+    return 1
+  fi
   # Template drift (an unsubstituted token) would leave '@' in a rendered file and
   # the filter would never start; fail here with a clear reason (callers fail open).
   # Generic guard: no legitimate rendered content contains '@' (S4 T5 dropped the

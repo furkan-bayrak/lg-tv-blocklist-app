@@ -1,6 +1,6 @@
 #!/bin/sh
 # check.sh — live status probe. Fixed entrypoint, no args. Prints exactly one
-# @@STATUS-BEGIN/@@STATUS-END block (schema 2, 14 keys). Read-only, fast, root-only friendly.
+# @@STATUS-BEGIN/@@STATUS-END block (schema 3, 15 keys). Read-only, fast, root-only friendly.
 SELF=$(readlink -f "$0" 2>/dev/null); [ -n "$SELF" ] || SELF="$0"
 SELF_DIR=${SELF%/*}
 . "$SELF_DIR/common.sh"
@@ -53,12 +53,17 @@ else
   mode=degraded
 fi
 
+# S6a T2: the tier the appliance is actually running (safe|strict), normalized
+# in common.sh — a missing/garbled key reports the SAFE default, so the panel
+# never renders a tier the box is not on. Read-only: check.sh never writes it.
+tier=$(tier_get)
+
 # ---- VERIFY ----
 # (shape is fixed by construction; the app-side strict parser is the verify gate)
 
 # ---- COMMIT ----
 echo '@@STATUS-BEGIN'
-echo "schema=2"
+echo "schema=3"
 echo "ts=$ts"
 echo "hook=$hook"
 echo "hook_target=$hook_target"
@@ -72,5 +77,6 @@ echo "gaveup=$gaveup"
 echo "mode=$mode"
 echo "upstream=$upstream"
 echo "cap=$cap"
+echo "tier=$tier"
 echo '@@STATUS-END'
 exit 0

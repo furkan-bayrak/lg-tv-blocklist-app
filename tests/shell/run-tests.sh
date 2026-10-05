@@ -156,7 +156,7 @@ new_sandbox
 ln -s "$SB/appdir/scripts/boot.sh" "$SB/hookdir/50-lgtv-blocklist-app"
 OUT="$(run_check "$SB/hookdir")"; RC=$?
 assert_block "happy path (hook linked)" "@@STATUS-BEGIN
-schema=2
+schema=3
 ts=<TS>
 hook=linked
 hook_target=$SB/appdir/scripts/boot.sh
@@ -170,6 +170,7 @@ gaveup=no
 mode=degraded
 upstream=none
 cap=unsupported
+tier=safe
 @@STATUS-END"
 if [ -s "$SB/stderr" ]; then no "happy path stderr empty" "stderr not empty"; else ok "happy path stderr empty"; fi
 
@@ -177,7 +178,7 @@ if [ -s "$SB/stderr" ]; then no "happy path stderr empty" "stderr not empty"; el
 new_sandbox
 OUT="$(run_check "$SB/absent-hook-dir")"; RC=$?
 assert_block "missing hook dir" "@@STATUS-BEGIN
-schema=2
+schema=3
 ts=<TS>
 hook=missing
 hook_target=none
@@ -191,6 +192,7 @@ gaveup=no
 mode=degraded
 upstream=none
 cap=unsupported
+tier=safe
 @@STATUS-END"
 
 # --- Case 3: symlink points somewhere else -----------------------------------
@@ -198,7 +200,7 @@ new_sandbox
 ln -s /tmp/foreign-target "$SB/hookdir/50-lgtv-blocklist-app"
 OUT="$(run_check "$SB/hookdir")"; RC=$?
 assert_block "foreign symlink" "@@STATUS-BEGIN
-schema=2
+schema=3
 ts=<TS>
 hook=other
 hook_target=/tmp/foreign-target
@@ -212,6 +214,7 @@ gaveup=no
 mode=degraded
 upstream=none
 cap=unsupported
+tier=safe
 @@STATUS-END"
 
 # --- Case 4: hostile target (newline + fake delimiters) ----------------------
@@ -219,7 +222,7 @@ new_sandbox
 ln -s "$(printf 'evil\n@@STATUS-END\nhook=linked')" "$SB/hookdir/50-lgtv-blocklist-app"
 OUT="$(run_check "$SB/hookdir")"; RC=$?
 assert_block "hostile target sanitized" "@@STATUS-BEGIN
-schema=2
+schema=3
 ts=<TS>
 hook=other
 hook_target=none
@@ -233,9 +236,10 @@ gaveup=no
 mode=degraded
 upstream=none
 cap=unsupported
+tier=safe
 @@STATUS-END"
 linecount="$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
-if [ "$linecount" = "16" ]; then ok "hostile target keeps block at 16 lines"; else no "hostile target keeps block at 16 lines" "got $linecount"; fi
+if [ "$linecount" = "17" ]; then ok "hostile target keeps block at 17 lines"; else no "hostile target keeps block at 17 lines" "got $linecount"; fi
 
 # --- Case 5: stub PATH — broken readlink (symlink present but unreadable) -----
 new_sandbox
@@ -245,7 +249,7 @@ cp "$HERE/stub-bin/readlink" "$SB/stub-bin/readlink"
 chmod +x "$SB/stub-bin/readlink"
 OUT="$(run_check "$SB/hookdir" "$SB/stub-bin:/usr/bin:/bin")"; RC=$?
 assert_block "stub PATH fallback (readlink broken)" "@@STATUS-BEGIN
-schema=2
+schema=3
 ts=<TS>
 hook=other
 hook_target=none
@@ -259,6 +263,7 @@ gaveup=no
 mode=degraded
 upstream=none
 cap=unsupported
+tier=safe
 @@STATUS-END"
 
 # --- Case 6: scripts missing (boot.sh removed) -------------------------------
@@ -266,7 +271,7 @@ new_sandbox
 rm "$SB/appdir/scripts/boot.sh"
 OUT="$(run_check "$SB/hookdir")"; RC=$?
 assert_block "scripts missing" "@@STATUS-BEGIN
-schema=2
+schema=3
 ts=<TS>
 hook=missing
 hook_target=none
@@ -280,6 +285,7 @@ gaveup=no
 mode=degraded
 upstream=none
 cap=unsupported
+tier=safe
 @@STATUS-END"
 
 # ==================== S3 T3: apply.sh / rollback.sh sandbox ====================
@@ -757,8 +763,8 @@ run_check_nostub() {  # check.sh without the stub bin on PATH (no iptables → d
 # --- T5 Case 1: check.sh — no state, no hook → honest degraded block ----------
 new_app_sandbox
 run_check_nostub
-assert_block "check schema2: no state → missing/degraded" "@@STATUS-BEGIN
-schema=2
+assert_block "check schema3: no state → missing/degraded" "@@STATUS-BEGIN
+schema=3
 ts=<TS>
 hook=missing
 hook_target=none
@@ -772,9 +778,10 @@ gaveup=no
 mode=degraded
 upstream=none
 cap=unsupported
+tier=safe
 @@STATUS-END"
 
-# --- T5 Case 2: check.sh — full live ON state (one pair / 14 keys / LF) -------
+# --- T5 Case 2: check.sh — full live ON state (one pair / 15 keys / LF) -------
 new_app_sandbox
 printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
 blocked="$(grep -m1 '^=' "$SB/appdir/filter/filter-input.txt" | cut -c2-)"
@@ -790,8 +797,8 @@ while [ "$n" -lt 100 ]; do
   sleep 0.2; n=$((n+1))
 done
 run_app check.sh
-assert_block "check schema2: full ON (live filter/keeper/guard)" "@@STATUS-BEGIN
-schema=2
+assert_block "check schema3: full ON (live filter/keeper/guard)" "@@STATUS-BEGIN
+schema=3
 ts=<TS>
 hook=missing
 hook_target=none
@@ -805,26 +812,27 @@ gaveup=no
 mode=on
 upstream=192.168.179.1
 cap=dnat
+tier=safe
 @@STATUS-END"
 begincount="$(printf '%s\n' "$OUT" | grep -c '^@@STATUS-BEGIN$')"
 endcount="$(printf '%s\n' "$OUT" | grep -c '^@@STATUS-END$')"
 keycount="$(printf '%s\n' "$OUT" | grep -c '^[a-z_]*=')"
-if [ "$begincount" = "1" ] && [ "$endcount" = "1" ] && [ "$keycount" = "14" ]; then
-  ok "check schema2: exactly one block, 14 keys"
+if [ "$begincount" = "1" ] && [ "$endcount" = "1" ] && [ "$keycount" = "15" ]; then
+  ok "check schema3: exactly one block, 15 keys"
 else
-  no "check schema2: exactly one block, 14 keys" "begin=$begincount end=$endcount keys=$keycount"
+  no "check schema3: exactly one block, 15 keys" "begin=$begincount end=$endcount keys=$keycount"
 fi
 crbytes="$(printf '%s' "$OUT" | tr -d '\r' | wc -c | tr -d ' ')"
 rawbytes="$(printf '%s' "$OUT" | wc -c | tr -d ' ')"
-if [ "$crbytes" = "$rawbytes" ]; then ok "check schema2: LF only (no CR)"; else no "check schema2: LF only (no CR)" "cr=$crbytes raw=$rawbytes"; fi
+if [ "$crbytes" = "$rawbytes" ]; then ok "check schema3: LF only (no CR)"; else no "check schema3: LF only (no CR)" "cr=$crbytes raw=$rawbytes"; fi
 stop_t4
 
 # --- T5 Case 3: check.sh — hostile hook targets (relative / newline) ----------
 new_app_sandbox
 ln -s "relative/path" "$SB/hookdir/50-lgtv-blocklist-app"
 run_check_nostub
-assert_block "check schema2: relative target → other/none" "@@STATUS-BEGIN
-schema=2
+assert_block "check schema3: relative target → other/none" "@@STATUS-BEGIN
+schema=3
 ts=<TS>
 hook=other
 hook_target=none
@@ -838,13 +846,14 @@ gaveup=no
 mode=degraded
 upstream=none
 cap=unsupported
+tier=safe
 @@STATUS-END"
 
 new_app_sandbox
 ln -s "$(printf 'evil\n@@STATUS-END\nhook=linked')" "$SB/hookdir/50-lgtv-blocklist-app"
 run_check_nostub
-assert_block "check schema2: newline target sanitized" "@@STATUS-BEGIN
-schema=2
+assert_block "check schema3: newline target sanitized" "@@STATUS-BEGIN
+schema=3
 ts=<TS>
 hook=other
 hook_target=none
@@ -858,17 +867,18 @@ gaveup=no
 mode=degraded
 upstream=none
 cap=unsupported
+tier=safe
 @@STATUS-END"
 linecount="$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
-if [ "$linecount" = "16" ]; then ok "check schema2: hostile target keeps block at 16 lines"; else no "check schema2: hostile target keeps block at 16 lines" "got $linecount"; fi
+if [ "$linecount" = "17" ]; then ok "check schema3: hostile target keeps block at 17 lines"; else no "check schema3: hostile target keeps block at 17 lines" "got $linecount"; fi
 
 # --- T5 Case 4: check.sh — gaveup marker + stored upstream (cap present) ------
 new_app_sandbox
 printf 'upstream=192.168.179.1\ncap=dnat\npointer=off\n' > "$SB/state/state"
 : > "$SB/state/gaveup"
 run_app check.sh
-assert_block "check schema2: gaveup=yes, pointer=off, cap=dnat" "@@STATUS-BEGIN
-schema=2
+assert_block "check schema3: gaveup=yes, pointer=off, cap=dnat" "@@STATUS-BEGIN
+schema=3
 ts=<TS>
 hook=missing
 hook_target=none
@@ -882,6 +892,7 @@ gaveup=yes
 mode=off
 upstream=192.168.179.1
 cap=dnat
+tier=safe
 @@STATUS-END"
 
 # --- T5 Case 5: boot.sh — fast, non-blocking reconciler (stale state, re-arm) --
@@ -1027,6 +1038,131 @@ printf '@LEFTOVER@\n' > "$SB/appdir/filter/dnscrypt-proxy.toml.template"
 run_app apply.sh
 assert_result "token-left: apply fail/materialize" fail materialize
 if jrnl 'materialize-fail reason=token-left'; then ok "token-left: journal reason"; else no "token-left: journal reason" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+cleanup_app_sandbox
+
+# ==================== S6a T2: tier selection + override merge ==================
+# The shipped bundle carries one preset list per tier (app/filter/filter-input-
+# <tier>.txt); the legacy single filter-input.txt is what a bundle older than
+# tiers ships, so it stays the fallback. Every sandbox ABOVE ships only
+# filter-input.txt on purpose — the whole suite above is therefore the fallback
+# path — while these cases copy the real tier presets in and exercise the
+# selection, the default, and the override merge.
+tier_sandbox() {  # new_app_sandbox + the two real tier presets
+  new_app_sandbox
+  cp "$FILTER_SRC/filter-input-safe.txt" "$FILTER_SRC/filter-input-strict.txt" "$SB/appdir/filter/"
+}
+
+# --- T2 case 1: no tier key at all → SAFE (fresh install = gentler list) ------
+tier_sandbox
+: > "$SB/state/state"
+OUT="$(probe_run materialize 192.168.5.5)"
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ]; then ok "tier default: materialize rc 0"; else no "tier default: materialize rc 0" "got [$OUT]"; fi
+if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt"; then ok "tier default: unset tier copies the SAFE preset byte for byte"; else no "tier default: unset tier copies the SAFE preset byte for byte" "diff: $(diff "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt" 2>&1 | head -3)"; fi
+if ! jrnl 'materialize-fallback'; then ok "tier default: no fallback taken (tier file present)"; else no "tier default: no fallback taken (tier file present)" "$(grep materialize-fallback "$SB/state/journal.log")"; fi
+run_app check.sh
+if printf '%s\n' "$OUT" | grep -qx 'tier=safe'; then ok "tier default: check.sh reports tier=safe"; else no "tier default: check.sh reports tier=safe" "OUT: $(printf '%s\n' "$OUT" | tr '\n' ' ')"; fi
+cleanup_app_sandbox
+
+# --- T2 case 2: tier=strict → the strict preset + visible in @@STATUS ----------
+tier_sandbox
+printf 'tier=strict\n' > "$SB/state/state"
+OUT="$(probe_run materialize 192.168.5.5)"
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ]; then ok "tier strict: materialize rc 0"; else no "tier strict: materialize rc 0" "got [$OUT]"; fi
+if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-strict.txt"; then ok "tier strict: copies the STRICT preset byte for byte"; else no "tier strict: copies the STRICT preset byte for byte" "diff: $(diff "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-strict.txt" 2>&1 | head -3)"; fi
+# The two presets must actually differ (otherwise the case is vacuous) and the
+# strict one must be the only one carrying the whole-zone anchors.
+if ! cmp -s "$SB/appdir/filter/filter-input-safe.txt" "$SB/appdir/filter/filter-input-strict.txt"; then ok "tier strict: presets differ (non-vacuous)"; else no "tier strict: presets differ (non-vacuous)" "safe == strict"; fi
+if grep -q '^[a-z]' "$SB/state/filter-input.txt" && ! grep -q '^[a-z]' "$SB/appdir/filter/filter-input-safe.txt"; then ok "tier strict: zone anchors present in strict only"; else no "tier strict: zone anchors present in strict only" "strict anchors: $(grep -c '^[a-z]' "$SB/state/filter-input.txt")"; fi
+run_check_nostub
+assert_block "tier strict: check.sh block (schema 3, tier last)" "@@STATUS-BEGIN
+schema=3
+ts=<TS>
+hook=missing
+hook_target=none
+scripts=ok
+filter=down
+rule=absent
+keeper=down
+guard=down
+pointer=off
+gaveup=no
+mode=degraded
+upstream=none
+cap=unsupported
+tier=strict
+@@STATUS-END"
+cleanup_app_sandbox
+
+# --- T2 case 3: legacy bundle (no tier file) → fallback, logged, still rc 0 --
+new_app_sandbox            # ships filter-input.txt only = pre-tier bundle
+printf 'tier=strict\n' > "$SB/state/state"
+OUT="$(probe_run materialize 192.168.5.5)"
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ]; then ok "tier fallback: missing tier file is not an error"; else no "tier fallback: missing tier file is not an error" "got [$OUT]"; fi
+if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input.txt"; then ok "tier fallback: legacy single list materialized"; else no "tier fallback: legacy single list materialized" "diff: $(diff "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input.txt" 2>&1 | head -3)"; fi
+if jrnl 'materialize-fallback reason=no-tier-file tier=strict'; then ok "tier fallback: journal line names the missing tier"; else no "tier fallback: journal line names the missing tier" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+cleanup_app_sandbox
+
+# --- T2 case 4: garbled / partial tier value → SAFE, never a bogus tier ------
+for bogus in 'tier=aggressive' 'tier=STRICT' 'tier=' 'tier=safe '; do
+  tier_sandbox
+  printf '%s\n' "$bogus" > "$SB/state/state"
+  OUT="$(probe_run materialize 192.168.5.5)"
+  if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt"; then ok "tier garbled [$bogus]: falls back to SAFE"; else no "tier garbled [$bogus]: falls back to SAFE" "materialized $(head -4 "$SB/state/filter-input.txt" | tail -1)"; fi
+  run_check_nostub
+  if printf '%s\n' "$OUT" | grep -qx 'tier=safe'; then ok "tier garbled [$bogus]: check.sh reports tier=safe"; else no "tier garbled [$bogus]: check.sh reports tier=safe" "OUT: $(printf '%s\n' "$OUT" | tr '\n' ' ')"; fi
+  cleanup_app_sandbox
+done
+
+# --- T2 case 5: overrides — '+name' forces an exact entry in, '-name' removes it
+tier_sandbox
+ov_rm="$(grep -m1 '^=' "$SB/appdir/filter/filter-input-safe.txt" | cut -c2-)"
+printf '%s\n' "-$ov_rm" '+forced.example' > "$SB/state/overrides.txt"
+OUT="$(probe_run materialize 192.168.5.5)"
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ]; then ok "overrides: materialize rc 0"; else no "overrides: materialize rc 0" "got [$OUT]"; fi
+if grep -qx "=$ov_rm" "$SB/state/filter-input.txt"; then no "overrides: '-$ov_rm' removed the exact rule" "still present"; else ok "overrides: '-$ov_rm' removed the exact rule"; fi
+if grep -qx '=forced.example' "$SB/state/filter-input.txt"; then ok "overrides: '+forced.example' added the exact rule"; else no "overrides: '+forced.example' added the exact rule" "$(tail -2 "$SB/state/filter-input.txt")"; fi
+lines=$(wc -l < "$SB/state/filter-input.txt" | tr -d ' ')
+preset=$(wc -l < "$SB/appdir/filter/filter-input-safe.txt" | tr -d ' ')
+if [ "$lines" = "$preset" ]; then ok "overrides: one removal + one addition keeps the line count ($lines)"; else no "overrides: one removal + one addition keeps the line count ($lines)" "preset=$preset"; fi
+fc=$(grep -c '^=forced.example$' "$SB/state/filter-input.txt" || true)
+if [ "$fc" = "1" ]; then ok "overrides: forced entry added exactly once"; else no "overrides: forced entry added exactly once" "count=$fc"; fi
+cleanup_app_sandbox
+
+# --- T2 case 6: '-name' removes a bare zone anchor (strict tier) -------------
+tier_sandbox
+printf 'tier=strict\n' > "$SB/state/state"
+ov_zone="$(grep -m1 '^[a-z]' "$SB/appdir/filter/filter-input-strict.txt")"
+printf '%s\n' "-$ov_zone" > "$SB/state/overrides.txt"
+OUT="$(probe_run materialize 192.168.5.5)"
+if grep -qx "$ov_zone" "$SB/state/filter-input.txt"; then no "overrides: zone anchor removal" "still present: $ov_zone"; else ok "overrides: zone anchor removal ($ov_zone)"; fi
+zcount=$(grep -c '^[a-z]' "$SB/state/filter-input.txt" | tr -d ' ')
+zpreset=$(grep -c '^[a-z]' "$SB/appdir/filter/filter-input-strict.txt" | tr -d ' ')
+if [ "$zcount" = "$((zpreset - 1))" ]; then ok "overrides: exactly one anchor removed ($zpreset → $zcount)"; else no "overrides: exactly one anchor removed ($zpreset → $zcount)" "got $zcount"; fi
+cleanup_app_sandbox
+
+# --- T2 case 7: empty / no-op / hostile override lines never change the list -
+tier_sandbox
+: > "$SB/state/overrides.txt"
+probe_run materialize 192.168.5.5 >/dev/null
+if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt"; then ok "overrides: empty file is a no-op"; else no "overrides: empty file is a no-op" "diff: $(diff "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt" 2>&1 | head -3)"; fi
+cleanup_app_sandbox
+
+tier_sandbox
+# A glob must never act as a pattern (a bare '*' would wipe the list), a name
+# outside [a-z0-9._-] is ignored, an unknown '-' target is a no-op, and a
+# comment/junk line is ignored. None of these may fail the materialize.
+printf '%s\n' '-*' '+*/etc' '+UPPER.example' '+bad;name' '-' '+' '# comment' '/abs/path' 'example.com' > "$SB/state/overrides.txt"
+OUT="$(probe_run materialize 192.168.5.5)"
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ]; then ok "overrides: junk lines never fail the materialize"; else no "overrides: junk lines never fail the materialize" "got [$OUT]"; fi
+if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt"; then ok "overrides: hostile lines change nothing (glob stays literal)"; else no "overrides: hostile lines change nothing (glob stays literal)" "diff: $(diff "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt" 2>&1 | head -3)"; fi
+if [ ! -f "$SB/state/filter-input.txt.ovtmp" ]; then ok "overrides: no temp file left behind"; else no "overrides: no temp file left behind" "ovtmp present"; fi
+cleanup_app_sandbox
+
+# --- T2 case 8: a missing '-name' target is a no-op, not an error ------------
+tier_sandbox
+printf '%s\n' '-not-in-the-list.example' > "$SB/state/overrides.txt"
+OUT="$(probe_run materialize 192.168.5.5)"
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ] && cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt"; then ok "overrides: unknown '-name' is a silent no-op"; else no "overrides: unknown '-name' is a silent no-op" "got [$OUT]"; fi
 cleanup_app_sandbox
 
 # --- Fix 2: keeper — stale lock (dead pid) cleared, keeper proceeds -----------

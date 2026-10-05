@@ -1,12 +1,17 @@
 /**
- * Strict parser for the app's @@STATUS block (schema 2).
+ * Strict parser for the app's @@STATUS block (schema 3).
  *
  * Contract (lockstep with app/scripts/check.sh, same IPK):
  *   - exactly one @@STATUS-BEGIN / @@STATUS-END pair, BEGIN first, END last
- *   - exactly 14 keys, each exactly once: schema, ts, hook, hook_target,
- *     scripts, filter, rule, keeper, guard, pointer, gaveup, mode, upstream, cap
- *   - schema must be exactly '2'
+ *   - exactly 15 keys, each exactly once: schema, ts, hook, hook_target,
+ *     scripts, filter, rule, keeper, guard, pointer, gaveup, mode, upstream,
+ *     cap, tier
+ *   - schema must be exactly '3'
  *   - any other line, duplicate key, missing key, malformed value → REJECT
+ * Fail-closed: a rejected block makes the panel show its unknown/error state.
+ * It must never render a tier (or any other field) it did not parse — which is
+ * why the schema-2 block is rejected outright instead of being read with tier
+ * defaulted: an older check.sh is not running the tier-aware behaviour.
  * Never parse un-delimited output; never guess.
  *
  * Plain script, not a module: the TV loads compiled JS with plain <script>
@@ -15,7 +20,7 @@
  */
 
 interface TvStatus {
-  schema: '2';
+  schema: '3';
   ts: number;
   hook: 'linked' | 'other' | 'missing';
   hookTarget: string; // absolute path or 'none'
@@ -29,6 +34,7 @@ interface TvStatus {
   mode: 'on' | 'off' | 'degraded';
   upstream: string; // IPv4 or 'none'
   cap: 'none' | 'dnat' | 'unsupported';
+  tier: 'safe' | 'strict';
 }
 
 var LgStatus: { parse: (text: string) => TvStatus | null } = (function () {
@@ -36,7 +42,7 @@ var LgStatus: { parse: (text: string) => TvStatus | null } = (function () {
   var END = '@@STATUS-END';
   var KEYS = [
     'schema', 'ts', 'hook', 'hook_target', 'scripts', 'filter', 'rule',
-    'keeper', 'guard', 'pointer', 'gaveup', 'mode', 'upstream', 'cap'
+    'keeper', 'guard', 'pointer', 'gaveup', 'mode', 'upstream', 'cap', 'tier'
   ] as const;
   type Key = (typeof KEYS)[number];
 
@@ -50,7 +56,8 @@ var LgStatus: { parse: (text: string) => TvStatus | null } = (function () {
     pointer: ['on', 'off'],
     gaveup: ['yes', 'no'],
     mode: ['on', 'off', 'degraded'],
-    cap: ['none', 'dnat', 'unsupported']
+    cap: ['none', 'dnat', 'unsupported'],
+    tier: ['safe', 'strict']
   };
 
   function isIpv4(v: string): boolean {
@@ -64,7 +71,7 @@ var LgStatus: { parse: (text: string) => TvStatus | null } = (function () {
     return true;
   }
 
-  /** Parse strict schema-2 status text. Returns null on ANY contract violation. */
+  /** Parse strict schema-3 status text. Returns null on ANY contract violation. */
   function parse(text: string): TvStatus | null {
     if (typeof text !== 'string') return null;
     if (text.indexOf('\r') !== -1) return null;
@@ -91,7 +98,7 @@ var LgStatus: { parse: (text: string) => TvStatus | null } = (function () {
     }
 
     const schema = seen.schema as string;
-    if (schema !== '2') return null;
+    if (schema !== '3') return null;
     const tsRaw = seen.ts as string;
     if (!/^\d{1,12}$/.test(tsRaw)) return null;
 
@@ -113,7 +120,7 @@ var LgStatus: { parse: (text: string) => TvStatus | null } = (function () {
     if (upstream !== 'none' && !isIpv4(upstream)) return null;
 
     return {
-      schema: '2',
+      schema: '3',
       ts: Number(tsRaw),
       hook: seen.hook as TvStatus['hook'],
       hookTarget,
@@ -126,7 +133,8 @@ var LgStatus: { parse: (text: string) => TvStatus | null } = (function () {
       gaveup: seen.gaveup as TvStatus['gaveup'],
       mode: seen.mode as TvStatus['mode'],
       upstream,
-      cap: seen.cap as TvStatus['cap']
+      cap: seen.cap as TvStatus['cap'],
+      tier: seen.tier as TvStatus['tier']
     };
   }
 

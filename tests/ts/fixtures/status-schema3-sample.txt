@@ -1,0 +1,17 @@
+@@STATUS-BEGIN
+schema=3
+ts=1789550329
+hook=linked
+hook_target=/media/developer/apps/usr/palm/applications/io.github.furkanbayrak.lgtvblocklist/scripts/boot.sh
+scripts=ok
+filter=up
+rule=on
+keeper=up
+guard=up
+pointer=on
+gaveup=no
+mode=on
+upstream=192.168.179.1
+cap=dnat
+tier=safe
+@@STATUS-END
