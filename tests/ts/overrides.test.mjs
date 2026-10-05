@@ -12,7 +12,10 @@
 // fails if the numbers or the character class ever drift apart.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
@@ -299,4 +302,67 @@ test('the grammar matches app/scripts/overrides.sh and common.sh (no silent drif
     assert.ok(shell.includes(reason), reason + ' is not a reason overrides.sh reports');
   }
   assert.equal(shell.includes('unsafe-payload'), false);
+});
+
+// The writer, run for real: the repo's own app/scripts/overrides.sh in a
+// throwaway state dir, reading the payload on stdin. Returns its exit code and
+// whatever the journal says, which is the only place the reason is recorded.
+function runWriter(payload, committed) {
+  const appDir = fileURLToPath(new URL('../../app', import.meta.url)).replace(/\/$/, '');
+  const stateDir = mkdtempSync(join(tmpdir(), 'lgtvb-overrides-reason-'));
+  try {
+    const result = spawnSync('sh', ['-c', 'sh ' + appDir + '/scripts/overrides.sh ' + committed], {
+      input: payload,
+      encoding: 'utf8',
+      env: Object.assign({}, process.env, { LGTVB_STATE_DIR: stateDir })
+    });
+    const journalPath = join(stateDir, 'journal.log');
+    const journal = existsSync(journalPath) ? readFileSync(journalPath, 'utf8') : '';
+    const stored = existsSync(join(stateDir, 'overrides.txt'));
+    return { status: result.status, stderr: result.stderr || '', journal, stored };
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+}
+
+function journaledReason(journal) {
+  const m = /overrides-reject reason=([a-z-]+)/.exec(journal);
+  return m === null ? '' : m[1];
+}
+
+test('a junk payload is refused with the SAME reason word as the TV\'s journal', () => {
+  // Review F5: the writer measures bytes and lines BEFORE it parses a single
+  // line, so 600 duplicate (and otherwise legal) lines are `oversized` on the
+  // TV. This end used to answer `duplicate`, and the panel would then name a
+  // different condition than the journal. The order is now the writer's, and
+  // these two refusals are compared to the writer itself, not to a copied string.
+  const name = 'ad.lgappstv.com'; // a row of the shipped list, 15 characters
+  const entries = [];
+  for (let i = 0; i < 600; i++) entries.push({ name: name, on: false });
+  const ts = plain(LgOverrides.serialize(entries, [name]));
+  assert.equal(ts.ok, false);
+  assert.equal(ts.reason, 'oversized');
+  assert.equal(ts.line, 0);
+  // 600 x ('ad.lgappstv.com' + 4) = 11400 bytes, i.e. under the byte cap: it is
+  // the LINE cap that fires, exactly as it does on the TV.
+  assert.match(ts.detail, /512 lines/);
+  const widePayload = ('ad.lgappstv.com=off\n').repeat(600);
+  assert.ok(widePayload.length < LgOverrides.MAX_BYTES, 'the case must hit the line cap, not the byte cap');
+  const shellRun = runWriter(widePayload, 'save');
+  assert.equal(shellRun.status, 2, shellRun.journal + shellRun.stderr);
+  assert.equal(journaledReason(shellRun.journal), ts.reason, shellRun.journal);
+  assert.equal(shellRun.stored, false, 'a refused payload must store nothing');
+
+  // The same for a payload that is inside both caps and bad on one line: the
+  // per-line reasons (and the line number) have to agree too.
+  const badCharset = LgOverrides.serialize(
+    [{ name: 'lge.com', on: true }, { name: 'bad name', on: false }],
+    ['lge.com', 'bad name']
+  );
+  const badRun = runWriter('lge.com=on\nbad name=off\n', 'save');
+  assert.equal(badRun.status, 2, badRun.journal + badRun.stderr);
+  assert.equal(journaledReason(badRun.journal), 'bad-charset');
+  assert.equal(badCharset.reason, journaledReason(badRun.journal));
+  assert.equal(badCharset.line, 2);
+  assert.match(badRun.journal, /line=2/);
 });

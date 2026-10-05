@@ -14,10 +14,11 @@
  *
  *  1. serialize() is the only producer. It validates each change against the
  *     grammar overrides.sh enforces (name charset, name length, membership in
- *     the app's domain list, no duplicates, the line and byte caps), so a bad
- *     change is refused in the UI, with a reason a human can act on and without
- *     a round trip that would fail in the dark. Every refusal is all-or-nothing:
- *     no partial payload is ever built.
+ *     the app's domain list, no duplicates, the line and byte caps) IN THE
+ *     WRITER'S ORDER - caps before per-line - so a bad change is refused in the
+ *     UI, with the same reason a human would read in the TV's journal, and
+ *     without a round trip that would fail in the dark. Every refusal is
+ *     all-or-nothing: no partial payload is ever built.
  *  2. isSafePayload() is the gate bridge.ts calls before composing. It accepts
  *     only text that CANNOT change the meaning of the command it lands in:
  *     `[a-z0-9._-]` names, one `=`, `on`/`off`, LF separators, nothing else —
@@ -129,16 +130,22 @@ var LgOverrides: LgOverridesApi = (function (): LgOverridesApi {
 
   /**
    * Build the payload for the rows the UI changed, or say why it cannot.
-   * Checks run in the writer's own order (shape, then charset, then length,
-   * then membership, then duplicates, then the caps) so the reason reported here
-   * is the reason the TV would report for the same input.
+   *
+   * The ORDER of the checks is the writer's own order (S6b review F5), because
+   * the reason reported here is the reason the TV would journal for the same
+   * bytes: a TS-local shape pre-pass for things the writer cannot even receive
+   * (it sees bytes, and unparseable bytes are its `bad-shape`), then THE CAPS -
+   * overrides.sh measures bytes and lines before it reads a single line, so 600
+   * duplicate lines are `oversized` there and must not be `duplicate` here -
+   * then the per-line checks (charset, length, membership, duplicate), then
+   * `empty-payload` (the writer reports it after its loop), and the
+   * isSafePayload invariant last. Only the shape pre-pass has no shell
+   * counterpart, and that is documented in each of its refusals.
    */
   function serialize(entries: OverrideChange[], knownNames: string[]): OverridePayloadResult {
+    // --- shape, this end only: the writer never sees an array or a boolean ---
     if (!Array.isArray(entries)) {
       return reject('bad-shape', 0, 'the changes were not sent as a list');
-    }
-    if (entries.length === 0) {
-      return reject('empty-payload', 0, 'no domain changes were given');
     }
     if (!Array.isArray(knownNames)) {
       return reject('unknown-domain', 0, 'the app\'s domain list was not available');
@@ -156,24 +163,49 @@ var LgOverrides: LgOverridesApi = (function (): LgOverridesApi {
       // payload the writer will reject line by line is worse than not sending.
       return reject('unknown-domain', 0, 'the app\'s domain list is empty');
     }
+    for (var s = 0; s < entries.length; s++) {
+      var candidate = entries[s];
+      var at = 'change ' + (s + 1);
+      if (candidate === null || typeof candidate !== 'object') {
+        return reject('bad-shape', s + 1, at + ' is not a name and a state');
+      }
+      if (typeof candidate.name !== 'string' || typeof candidate.on !== 'boolean') {
+        return reject('bad-shape', s + 1, at + ' needs a string name and a true/false state');
+      }
+      // The writer calls an empty name bad-shape too (its `bad-shape` branch for
+      // a line with nothing before the `=`), so the reason words still agree.
+      if (candidate.name.length === 0) {
+        return reject('bad-shape', s + 1, at + ' has an empty name');
+      }
+    }
 
+    // --- the caps, in the writer's order: bytes first, then lines ---
+    // Measured from what the payload WILL hold: one `name=on|off` line per
+    // change, LF-terminated. Name lengths are counted in characters, not bytes;
+    // every name that survives the per-line check below is ASCII (a character
+    // outside [a-z0-9._-] is refused, and isSafePayload checks the same alphabet
+    // again), so the two counts can only differ for a payload that is going to be
+    // refused anyway - never for one that is sent.
+    var bytes = 0;
+    for (var b = 0; b < entries.length; b++) {
+      bytes += entries[b].name.length + 4; // '=on' | '=off' + one LF
+    }
+    if (bytes > MAX_BYTES) {
+      return reject('oversized', 0, 'the changes need more than ' + MAX_BYTES + ' bytes');
+    }
+    if (entries.length > MAX_LINES) {
+      return reject('oversized', 0, 'the changes need more than ' + MAX_LINES + ' lines');
+    }
+
+    // --- per line, in the writer's order: charset, length, membership, duplicate ---
     var seen = newMap();
     var payload = '';
     for (var i = 0; i < entries.length; i++) {
       var line = i + 1;
       var entry = entries[i];
       var where = 'change ' + line;
-      if (entry === null || typeof entry !== 'object') {
-        return reject('bad-shape', line, where + ' is not a name and a state');
-      }
       var name = entry.name;
       var on = entry.on;
-      if (typeof name !== 'string' || typeof on !== 'boolean') {
-        return reject('bad-shape', line, where + ' needs a string name and a true/false state');
-      }
-      if (name.length === 0) {
-        return reject('bad-shape', line, where + ' has an empty name');
-      }
       if (!NAME_CHARS.test(name)) {
         return reject('bad-charset', line, where + ': the name has a character outside [a-z0-9._-]');
       }
@@ -190,11 +222,9 @@ var LgOverrides: LgOverridesApi = (function (): LgOverridesApi {
       payload += name + (on ? '=on' : '=off') + '\n';
     }
 
-    if (payload.length > MAX_BYTES) {
-      return reject('oversized', 0, 'the changes need more than ' + MAX_BYTES + ' bytes');
-    }
-    if (entries.length > MAX_LINES) {
-      return reject('oversized', 0, 'the changes need more than ' + MAX_LINES + ' lines');
+    // --- zero assignments, where the writer reports it: after its loop ---
+    if (entries.length === 0) {
+      return reject('empty-payload', 0, 'no domain changes were given');
     }
     // The invariant the command in src/bridge.ts rests on: what this function
     // returns must pass the gate the bridge applies before composing. Two
