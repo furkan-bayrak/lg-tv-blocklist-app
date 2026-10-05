@@ -192,6 +192,7 @@ const NODE8_FATAL = [
   ['numeric separator (`1_000`)', 'var x = 1_000;\n', /contains numeric separator/],
   ['BigInt literal (`1n`)', 'var x = 1n;\n', /contains BigInt literal/],
   ['optional catch binding (`catch {`)', 'try { f(); } catch { g(); }\n', /contains optional catch binding/],
+  ['class with a private field (`class{ #x = 1; … }`)', 'var C = class{ #x = 1; get y() { return this.#x; } };\n', /contains class/],
 ];
 
 for (const [name, code, expected] of NODE8_FATAL) {
@@ -199,6 +200,32 @@ for (const [name, code, expected] of NODE8_FATAL) {
     assertFailsInBothTrees(name, code, expected);
   });
 }
+
+// ---------------------------------------------------------------------------
+// Round 2, hole C1: the `class` rule needed whitespace after the keyword
+// (`/\bclass\s/`), so `var C = class{};` and `class Foo {}` — class in
+// expression and declaration position, with or without a space — both passed
+// with rc 0. node v8.17.0 accepts a bare `class{}`, so this one is ES5 policy
+// rather than device-fatal, but the webview's older engine does not. In the
+// other direction the rule fired on `var x = obj.class + 'a';`, a legal ES5
+// member access.
+// ---------------------------------------------------------------------------
+test('class: expression position without a space fails in both trees (ES5 policy)', () => {
+  assertFailsInBothTrees('class expression', 'var C = class{};\n', /contains class/);
+});
+
+test('class: declaration position fails in both trees (ES5 policy)', () => {
+  assertFailsInBothTrees('class declaration', 'class Foo {\n  m() {}\n}\n', /contains class/);
+});
+
+test('still passes: `obj.class` and `{class: 1}` are ES5 property names, not syntax', () => {
+  const r = runChecker({
+    ...baseFiles(),
+    'app/js/main.js': "var x = obj.class + 'a';\nvar o = {class: 1, class2: 2};\nvar p = { class : 3 };\n",
+  });
+  assert.equal(r.status, 0, `expected rc 0 (stdout=${r.stdout} stderr=${r.stderr})`);
+  assert.doesNotMatch(r.stderr, /contains class/);
+});
 
 test('still passes: ES5 neighbours of the new rules (`flag ?.5 : 1`, identifiers like `step_1_2`)', () => {
   const r = runChecker({

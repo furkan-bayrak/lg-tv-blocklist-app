@@ -408,9 +408,43 @@ function reportMaskErrors(path, label) {
 
 const dir = 'app/js';
 const scriptsDir = 'app/scripts';
+// True when `word` appears as CODE: not as a member name (`obj.class`) and not
+// as an object-literal key (`{ class: 1 }`) — the two legal ES5 neighbours a
+// keyword rule must tolerate. Non-code spans are blanked by the masker before
+// any rule runs, so a bare match means a parser would really see the keyword.
+function codeWord(word) {
+  return (text) => {
+    const re = new RegExp('\\b' + word + '\\b', 'g');
+    let match;
+    while ((match = re.exec(text)) !== null) {
+      if (isPropertyName(text, match.index, match[0].length)) continue;
+      return true;
+    }
+    return false;
+  };
+}
+
+// `x.class`, `x.import`, `{ class: 1 }` — ES5 allows reserved-ish words as
+// property names, so a member access or an object key is not new syntax.
+function isPropertyName(text, index, length) {
+  let k = index - 1;
+  while (k >= 0 && /\s/.test(text[k])) k -= 1;
+  if (k >= 0 && text[k] === '.') return true;
+  let j = index + length;
+  while (j < text.length && /\s/.test(text[j])) j += 1;
+  return text[j] === ':';
+}
+
+// A rule is a RegExp tested against the masked text, or a function taking the
+// masked text (for rules a single pattern cannot express, such as “this token
+// is a numeric literal AND it contains a separator”).
 const patterns = [
   ['arrow function', /=>/],
-  ['class', /\bclass\s/],
+  // `class` in declaration or expression position, with or without a space
+  // (`class{`, `class{}`, `class Foo {`, `var C = class{}`). node v8 accepts a
+  // plain `class{}` but the webview's older engine does not, so this stays a
+  // policy rule; `obj.class` / `{class: 1}` are legal ES5 and must not fire.
+  ['class', codeWord('class')],
   ['let', /\blet\s/],
   ['const', /\bconst\s/],
   ['async', /\basync\s/],
@@ -490,8 +524,9 @@ function scanTokens(root, names, prefix, tokens, suffix = '') {
     const { text } = masked(path);
     for (const entry of tokens) {
       const label = entry[0];
-      const pattern = entry[1];
-      if (pattern.test(text)) {
+      const matcher = entry[1];
+      const hit = matcher instanceof RegExp ? matcher.test(text) : matcher(text);
+      if (hit) {
         console.error('FAIL: ' + prefix + name + ' contains ' + label + suffix);
         failed = true;
       }
