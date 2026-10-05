@@ -165,6 +165,53 @@ test('blinding case 8: /[/*]/ … const … */ must not hide const (nor pass on 
   assertFailsInBothTrees('case 8', 'var re = /[/*]/;\nconst x = 1;\n*/\n', /contains const/);
 });
 
+test('blinding case 6: a regex literal must not hide `??` and `?.`', () => {
+  const code = 'var re = /\\//; var a = b ?? 1; var c = d?.e;\n';
+  for (const target of ['app/js/main.js', 'app/scripts/dnsq.js']) {
+    const r = runChecker({ ...baseFiles(), [target]: code });
+    assert.equal(r.status, 1, `case 6: ${target} expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+    assert.match(r.stderr, /contains nullish coalescing/, `case 6: ${target} stderr=${r.stderr}`);
+    assert.match(r.stderr, /contains optional chaining/, `case 6: ${target} stderr=${r.stderr}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The pattern list must cover what node v8 actually refuses.
+//
+// Measured with the real node v8.17.0 binary (`npx node@8.17.0 --check`): it
+// rejects every sample below, and before these rules existed all of them passed
+// this gate with rc 0 — the gate advertised as the automated compatibility check
+// for the code the TV executes could not see the syntax that breaks the TV.
+// ---------------------------------------------------------------------------
+const NODE8_FATAL = [
+  ['optional chaining (`b?.c`)', 'var x = b?.c;\n', /contains optional chaining/],
+  ['nullish coalescing (`b ?? 1`)', 'var x = b ?? 1;\n', /contains nullish coalescing/],
+  ['logical assignment (`a ||= 1`)', 'var x = a ||= 1;\n', /contains logical assignment/],
+  ['logical assignment (`a &&= 1`)', 'var x = a &&= 1;\n', /contains logical assignment/],
+  ['nullish assignment (`a ??= 1`)', 'var x = a ??= 1;\n', /contains nullish coalescing/],
+  ['numeric separator (`1_000`)', 'var x = 1_000;\n', /contains numeric separator/],
+  ['BigInt literal (`1n`)', 'var x = 1n;\n', /contains BigInt literal/],
+  ['optional catch binding (`catch {`)', 'try { f(); } catch { g(); }\n', /contains optional catch binding/],
+];
+
+for (const [name, code, expected] of NODE8_FATAL) {
+  test(`node-8-fatal: ${name} fails in both trees`, () => {
+    assertFailsInBothTrees(name, code, expected);
+  });
+}
+
+test('still passes: ES5 neighbours of the new rules (`flag ?.5 : 1`, identifiers like `step_1_2`)', () => {
+  const r = runChecker({
+    ...baseFiles(),
+    // `?.` followed by a digit is the ES5 conditional with a `.5` literal, not
+    // optional chaining (the spec forbids a digit right after `?.`), and
+    // `step_1_2` is an identifier, not a numeric separator.
+    'app/js/main.js':
+      'var flag = 1;\nvar n = flag ? .5 : 1;\nvar m = flag ?.5 : 1;\nvar step_1_2 = n + m;\n',
+  });
+  assert.equal(r.status, 0, `expected rc 0 (stdout=${r.stdout} stderr=${r.stderr})`);
+});
+
 // The other direction: division must stay division. If a `/` after a value is
 // mistaken for a regex literal, the "body" it swallows can hide real code — the
 // same silent pass from the other side.

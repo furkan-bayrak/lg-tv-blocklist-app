@@ -32,6 +32,13 @@
  * understand is left visible, which can only cause a false FAIL, never a silent
  * pass. Backticks stay visible, so template literals are still detected.
  *
+ * The pattern list below is a conservative ES5 superset, not an ES5-exact parse:
+ * it catches the syntax the TV's engine and node v8 reject, and each rule is
+ * deliberately noisy-free around legal ES5 neighbours (`flag ?.5 : 1`,
+ * identifiers like `step_1_2`), but a rule can in principle fire on something
+ * ES5 in an unusual position. A false FAIL is acceptable; a missed construct is
+ * not, which is why the new-syntax rules err on the side of reporting.
+ *
  * Plain-script guard (S3/T7): index.html loads js/bridge.js, js/status.js and
  * js/main.js as plain <script> tags — there is no module loader — so every
  * file in app/js/ must stay a plain-script IIFE global. One `import`/`export`
@@ -350,6 +357,15 @@ const patterns = [
   ['generator', /function\s*\*/],
   ['template literal', /`/],
   ['spread/rest argument', /\.\.\./],
+  // node v8 (and the webview's older engine) refuses these as well: measured
+  // with the real v8.17.0 binary, `--check` rejects all of them while this gate
+  // used to pass them. Keep the reasons next to the rule, like the list above.
+  ['optional chaining', /\?\.\s*[A-Za-z_$[(]/], // `?.` + digit is ES5's `? .5`
+  ['nullish coalescing', /\?\?/],
+  ['logical assignment', /(?:\|\||&&)\s*=/],
+  ['numeric separator', /(?<![\w$])(?:0[xXoObB])?[\d_]*\d_\d/],
+  ['BigInt literal', /\b\d+n\b/],
+  ['optional catch binding', /\bcatch\s*\{/],
 ];
 const commonJsTokens = [
   ['module.exports', /\bmodule\s*\.\s*exports\b/],
