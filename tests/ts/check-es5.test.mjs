@@ -76,8 +76,8 @@ function assertFailsInBothTrees(name, code, expected) {
 test('passes on an ES5-only tree and reports both scanned trees', () => {
   const r = runChecker(baseFiles());
   assert.equal(r.status, 0, `expected rc 0, got ${r.status} (stderr=${r.stderr})`);
-  assert.match(r.stdout, /OK: app\/js is conservative ES5 \(main\.js\)/);
-  assert.match(r.stdout, /OK: app\/scripts\/\*\.js is conservative ES5 \(dnsq\.js\)/);
+  assert.match(r.stdout, /OK: app\/js has nothing on the pattern list \(main\.js\)/);
+  assert.match(r.stdout, /OK: app\/scripts\/\*\.js has nothing on the pattern list \(dnsq\.js\)/);
   assert.match(r.stdout, /OK: plain-script guard/);
 });
 
@@ -542,7 +542,7 @@ test('a tree holding only nested .js files counts as non-empty (no false "no .js
   delete files['app/js/main.js'];
   const clean = runChecker({ ...files, 'app/js/lib/deep.js': 'var n = 1;\n' });
   assert.equal(clean.status, 0, `expected rc 0 (stdout=${clean.stdout} stderr=${clean.stderr})`);
-  assert.match(clean.stdout, /OK: app\/js is conservative ES5 \(lib\/deep\.js\)/);
+  assert.match(clean.stdout, /OK: app\/js has nothing on the pattern list \(lib\/deep\.js\)/);
   assert.doesNotMatch(clean.stderr, /no \.js files found/);
   const dirty = runChecker({ ...files, 'app/js/lib/deep.js': 'var n = 1;\nconst deep = 2;\n' });
   assert.equal(dirty.status, 1, `the nested file must be reported (stdout=${dirty.stdout})`);

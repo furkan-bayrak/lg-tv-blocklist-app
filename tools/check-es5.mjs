@@ -1,51 +1,109 @@
 #!/usr/bin/env node
 /*
- * Fails if any compiled file in app/js/ — or any TV-side script in
- * app/scripts/ — uses syntax newer than ES5.
+ * Scans the shipped JavaScript for syntax the device must not see.
  *
- * Why: the app must run on the oldest web engine we claim (design spec §3).
- * ares-package's own compatibility detection (webosbrew-ipk-verify) runs in CI;
- * this catches regressions in seconds on the developer machine.
- * Dependency-free on purpose.
+ * Read this as a conservative PATTERN CHECK plus a masking lexer, NOT an ES5
+ * parser: it fails loudly when a construct the oldest engine we claim cannot
+ * read appears in a file we ship. The two lists below say exactly what is and
+ * is not enforced, so the OK line can be read for what it is.
  *
- * app/scripts/ holds the TV-side programs: dnsq.sh execs app/scripts/dnsq.js
- * on the platform's node v8.12.0. That tree gets the same syntax patterns, but
- * never the CommonJS ban — require() is those CLIs' contract. Its compatibility
- * used to rest on a manual `npx node@8.17.0` run; this scan is the automated gate.
+ * Why two trees, both scanned RECURSIVELY (a file one directory down is shipped
+ * just the same):
+ *   - app/js/ is loaded by the webview as plain <script> tags, so CommonJS
+ *     tokens are banned there as well (layer 2 of the plain-script guard);
+ *   - app/scripts/ is executed on the TV by node v8.12.0 — dnsq.sh execs
+ *     app/scripts/dnsq.js — where require() is the contract, so no CommonJS ban.
+ * A third tree, src/, is checked by the plain-script guard only: one
+ * import/export in a .ts file makes tsc emit CommonJS and the webview breaks at
+ * load time. A tree that is missing, or that yields no file to scan, is a FAIL.
+ * Dependency-free on purpose; the app must run on the oldest engine we claim
+ * (design spec §3). ares-package's own compatibility detection
+ * (webosbrew-ipk-verify) runs in CI; this catches regressions in seconds on the
+ * developer machine.
+ *
+ * WHAT THIS CATCHES. Every entry was measured with the real node v8.17.0
+ * binary — `--check` AND a real run, because for regex features `--check`
+ * accepts what the engine then throws on:
+ *   - syntax node v8 itself refuses: optional chaining, nullish coalescing,
+ *     logical assignment, numeric separators, BigInt literals in every base,
+ *     optional catch binding, ESM import/export, class bodies with private
+ *     fields, regex named capture groups, \p{…}/\P{…} with the u flag, and the
+ *     `d` and `v` regex flags;
+ *   - ES6 syntax node v8 does accept but the TV's older webview must not see
+ *     (ES5 policy, not device-fatal): let, const, arrow functions, class in
+ *     declaration and expression position (`class{}`, `class Foo {}`), template
+ *     literals, generators, spread/rest arguments, async/await.
+ *
+ * WHAT THIS DOES NOT CATCH — a gap stated rather than hidden, because no pattern
+ * separates these from legal ES5 without also firing on legal ES5:
+ *   - destructuring, for..of, shorthand methods, getters, computed property
+ *     names, default/rest parameters and `**`. node v8.17.0 ACCEPTS all of
+ *     them, so they are an ES5-policy gap for the webview rather than a device
+ *     break for the TV, and they pass this check;
+ *   - regex lookbehind `(?<=…)`/`(?<!…)`, the `s`/`y`/`u` flags and `\u{…}u`:
+ *     node 8.17 accepts those too, so they are not flagged;
+ *   - anything else only a parser can see. `npm run check:node8` closes that
+ *     hole for syntax: it runs the REAL node 8 parser over every .js file in
+ *     app/js and app/scripts in CI. A real parser cannot be blinded by a regex
+ *     literal, so it subsumes the whole class of masker-soundness bugs for
+ *     syntax, and this pattern list is left responsible only for the policy
+ *     forms the parser accepts.
+ *
+ * KNOWN FALSE POSITIVES (measured, accepted): a keyword rule matches a keyword
+ * used as code, but a legal ES5 identifier or property name can still look like
+ * one in an unusual position — `var y = obj.let - 1;` and `var async = 1;` both
+ * fail. Biased on purpose: a loud false FAIL is acceptable in this tool, a
+ * silent pass is not.
  *
  * Patterns are matched against a masked copy of the source: ONE left-to-right
  * lexer pass blanks the contents of every non-code span — single- and
  * double-quoted strings, template literals, line and block comments, and REGEX
- * LITERALS. A comment-only scrub cannot be sound: it cannot tell
+ * LITERALS (whose body and flags are recorded first, so the regex-feature rules
+ * above still see them). A comment-only scrub cannot be sound: it cannot tell
  * `p.replace(/\//g, '-')` from `a // comment`, so the `/` inside the regex opens
  * a comment that swallows the rest of the line — real code included. The masker
- * therefore classifies every span as it walks. Regex vs division is decided by
- * the previous significant token: after an operator, `(`, `,`, `=`, `:`, `[`,
- * `!`, `&`, `|`, `?`, `{`, `}`, `;` or a value-position keyword (`return`,
- * `typeof`, `case`, …) a `/` opens a regex literal, while after an identifier,
- * number, `)`, `]` or an expression-position `}` it is division. Escapes are
- * honoured and a `/` inside a character class does not end the literal.
+ * therefore classifies every span as it walks. Escapes are honoured and a `/`
+ * inside a character class does not end the literal.
  *
- * The masker FAILS CLOSED: an unterminated string, template literal, comment or
- * regex, or a `/` it cannot classify, fails the file with a clear message (the
- * gate must never print OK for a file it could not read). Anything it does not
- * understand is left visible, which can only cause a false FAIL, never a silent
- * pass. Backticks stay visible, so template literals are still detected.
+ * Regex vs division is decided by the previous significant token: after an
+ * operator, `(`, `,`, `=`, `:`, `[`, `!`, `&`, `|`, `?`, `{`, `;`, a
+ * statement-position `}` or a value-position keyword (`return`, `typeof`,
+ * `case`, …) a `/` opens a regex literal, while after an identifier, number,
+ * string, `)`, `]`, `++`/`--` or an expression-position `}` it is division.
  *
- * The pattern list below is a conservative ES5 superset, not an ES5-exact parse:
- * it catches the syntax the TV's engine and node v8 reject, and each rule is
- * deliberately noisy-free around legal ES5 neighbours (`flag ?.5 : 1`,
- * identifiers like `step_1_2`), but a rule can in principle fire on something
- * ES5 in an unusual position. A false FAIL is acceptable; a missed construct is
- * not, which is why the new-syntax rules err on the side of reporting.
+ * Two positions cannot be settled lexically at all:
+ *   - a `/` after a `}` that may close either a statement block
+ *     (`if (x) {} /re/.test(y)`) or a function-EXPRESSION body
+ *     (`var f = function () {} / 2;`);
+ *   - a `/` after a `)` that may close an `if`/`while`/`for`/`with`/`catch`/
+ *     `switch` header (statement position) or a call, grouping, or parameter
+ *     list (expression position).
+ * The masker remembers what opened each paren and brace, and where the kind is
+ * ambiguous it FAILS CLOSED (`ambiguous / after }`, `ambiguous / after )`)
+ * instead of guessing. Both guesses are unsound: read a regex as division and
+ * its own `/*` or `//` bytes open a phantom comment that hides real code; read
+ * a division as a regex and the “body” swallows to the next `/`. Measured
+ * before this rule: `var f = function () {} / 2; const HIDDEN = 42;` and
+ * `if (x) /[/*]/.test(y); const AFTER = 1;` (plus a later comment
+ * terminator) both printed OK. Where a `/` follows a statement-position `}` it
+ * still opens a regex, and a regex after a control header `)` is statement
+ * position again.
+ *
+ * The masker FAILS CLOSED everywhere else too: an unterminated string, template
+ * literal, comment or regex, and any `/` after a token it does not know, fail
+ * the file with a clear message — the gate must never print OK for a file it
+ * could not read. Backticks stay visible, so template literals are still
+ * detected. A false FAIL is acceptable here; a silent pass is not.
  *
  * Plain-script guard (S3/T7): index.html loads js/bridge.js, js/status.js and
  * js/main.js as plain <script> tags — there is no module loader — so every
  * file in app/js/ must stay a plain-script IIFE global. One `import`/`export`
  * in src/ makes tsc emit CommonJS (`exports.`/`require(`) and the webview
  * breaks at load time; the ES5 checks alone would not notice. Two layers:
- *   1. every .ts file under src/: no top-level import/export (the root cause).
+ *   1. every .ts file under src/: no import/export anywhere (the root cause);
  *   2. app/js/*.js: no CommonJS tokens (the compiled symptom).
+ * Both layers are position-aware: a keyword only counts where a parser would
+ * see it as code, never as a property name (`obj.export`, `{ class: 1 }`).
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -673,6 +731,6 @@ if (failed) {
   process.exit(1);
 }
 
-console.log('OK: app/js is conservative ES5 (' + checked.join(', ') + ')');
-console.log('OK: app/scripts/*.js is conservative ES5 (' + scriptFiles.join(', ') + ')');
+console.log('OK: app/js has nothing on the pattern list (' + checked.join(', ') + ')');
+console.log('OK: app/scripts/*.js has nothing on the pattern list (' + scriptFiles.join(', ') + ')');
 console.log('OK: plain-script guard — src/**/*.ts import/export-free, app/js/*.js CommonJS-token-free');
