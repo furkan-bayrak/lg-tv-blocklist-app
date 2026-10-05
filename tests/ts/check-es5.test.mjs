@@ -19,9 +19,9 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const CHECKER = fileURLToPath(new URL('../../tools/check-es5.mjs', import.meta.url));
@@ -44,7 +44,9 @@ function baseFiles() {
 }
 
 let seq = 0;
-function runChecker(files, emptyDirs = []) {
+// `links` are [linkPath, target] pairs created after the files, so a fixture can
+// hold a broken link, a loop or a link out of the tree at an exact path.
+function runChecker(files, emptyDirs = [], links = []) {
   seq += 1;
   const tree = join(ROOT, 'tree' + seq);
   for (const rel of emptyDirs) {
@@ -53,6 +55,10 @@ function runChecker(files, emptyDirs = []) {
   for (const rel of Object.keys(files)) {
     mkdirSync(join(tree, dirname(rel)), { recursive: true });
     writeFileSync(join(tree, rel), files[rel]);
+  }
+  for (const [rel, target] of links) {
+    mkdirSync(join(tree, dirname(rel)), { recursive: true });
+    symlinkSync(target, join(tree, rel));
   }
   const r = spawnSync(process.execPath, [CHECKER], { cwd: tree, encoding: 'utf8' });
   assert.equal(r.error, undefined, `checker failed to start: ${r.error}`);
@@ -657,4 +663,98 @@ test('division after a call whose callee is a plain identifier stays clean', () 
     const r = runChecker({ ...baseFiles(), 'app/js/main.js': code });
     assert.equal(r.status, 0, `${JSON.stringify(code)} must pass (stderr=${r.stderr})`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Round 3, hole B: the directory walk used statSync on every entry, which
+// follows links and throws on an entry it cannot stat. Measured before this fix:
+//   - `ln -s /nonexistent app/scripts/broken.js`  -> uncaught ENOENT stack trace
+//   - `ln -s . app/scripts/loop`                  -> ELOOP stack trace once the
+//     walk descended into its own parent, again and again;
+//   - `ln -s /tmp app/scripts/ext`                -> a directory OUTSIDE the
+//     scanned tree was followed and its files scanned (rc 1 on a file under
+//     /tmp, for content the app never ships).
+// rc 1 either way, but a stack trace is not a verdict, and following a link out
+// of the tree is a scan the tool does not control. The walk now reads dirents
+// (lstat semantics), never descends a link, and reports each link or unreadable
+// directory as a FAIL line instead of skipping it: a silent skip is exactly the
+// hole this whole checker exists to close.
+// ---------------------------------------------------------------------------
+test('a broken symlink fails with a FAIL line, not an uncaught stack trace', () => {
+  const r = runChecker(baseFiles(), [], [['app/scripts/broken.js', '/nonexistent']]);
+  assert.equal(r.status, 1, `expected rc 1 (stdout=${r.stdout} stderr=${r.stderr})`);
+  assert.match(
+    r.stderr,
+    /FAIL: app\/scripts\/broken\.js is an unresolvable symbolic link to \/nonexistent \(ENOENT\)/
+  );
+  assert.doesNotMatch(r.stderr, /node:fs|at statSync|Error: ENOENT/);
+  assert.doesNotMatch(r.stdout, /OK: app\/scripts/);
+});
+
+test('a symlink loop fails with a FAIL line instead of recursing into its own parent', () => {
+  for (const [name, target, expected] of [
+    ['a self-referential link (`loop -> loop`)', 'loop', /unresolvable symbolic link to loop \(ELOOP\)/],
+    ['a link to its own directory (`loop -> .`)', '.', /is a symbolic link to /],
+  ]) {
+    const r = runChecker(baseFiles(), [], [['app/scripts/loop', target]]);
+    assert.equal(r.status, 1, `${name}: expected rc 1 (stdout=${r.stdout} stderr=${r.stderr})`);
+    assert.match(r.stderr, expected, `${name}: stderr=${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /node:fs|ELOOP:/, `${name}: stderr=${r.stderr}`);
+  }
+});
+
+test('a directory symlink out of the tree is not followed (outside content is never scanned)', () => {
+  const outside = mkdtempSync(join(tmpdir(), 'check-es5-outside-'));
+  try {
+    writeFileSync(join(outside, 'outside.js'), 'var v = a?.b;\n');
+    const r = runChecker(baseFiles(), [], [['app/scripts/ext', outside]]);
+    assert.equal(r.status, 1, `expected rc 1 (stdout=${r.stdout} stderr=${r.stderr})`);
+    assert.match(r.stderr, /FAIL: app\/scripts\/ext is a symbolic link to .* \(outside app\/scripts\)/);
+    // The hook: before the fix this file WAS scanned and blamed.
+    assert.doesNotMatch(r.stderr, /optional chaining/, `stderr=${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /outside\.js/, `stderr=${r.stderr}`);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('a symlink in place of a scanned tree root is refused, not scanned through', () => {
+  const files = baseFiles();
+  delete files['app/js/main.js'];
+  const outside = mkdtempSync(join(tmpdir(), 'check-es5-rootlink-'));
+  try {
+    writeFileSync(join(outside, 'main.js'), 'var v = a?.b;\n');
+    const r = runChecker(files, [], [['app/js', outside]]);
+    assert.equal(r.status, 1, `expected rc 1 (stdout=${r.stdout} stderr=${r.stderr})`);
+    assert.match(r.stderr, /FAIL: app\/js is a symbolic link to /);
+    assert.doesNotMatch(r.stderr, /optional chaining/, `stderr=${r.stderr}`);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('a resolvable `.js` symlink inside the tree is reported, an unrelated one is not news', () => {
+  const reported = runChecker(baseFiles(), [], [['app/scripts/alias.js', 'dnsq.js']]);
+  assert.equal(reported.status, 1, `expected rc 1 (stdout=${reported.stdout} stderr=${reported.stderr})`);
+  assert.match(reported.stderr, /FAIL: app\/scripts\/alias\.js is a symbolic link to .*dnsq\.js/);
+  // The walk ignores non-`.js` files in these trees either way, so a `.sh` link
+  // is not a finding — it must not turn the gate red on its own.
+  const ignored = runChecker(baseFiles(), [], [['app/scripts/alias.sh', 'dnsq.js']]);
+  assert.equal(ignored.status, 0, `expected rc 0 (stdout=${ignored.stdout} stderr=${ignored.stderr})`);
+});
+
+test('the repository trees hold no symlinks today (the walk would refuse to follow one)', () => {
+  const found = [];
+  for (const root of ['app', 'src', 'tools']) {
+    const stack = [join(REPO_ROOT, root)];
+    while (stack.length > 0) {
+      const dir = stack.pop();
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isSymbolicLink()) found.push(relative(REPO_ROOT, path));
+        else if (entry.isDirectory()) stack.push(path);
+      }
+    }
+  }
+  assert.deepEqual(found, [], `symlinks must not appear in a scanned tree: ${found.join(', ')}`);
 });

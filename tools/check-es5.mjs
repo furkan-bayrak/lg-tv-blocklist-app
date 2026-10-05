@@ -105,8 +105,8 @@
  * Both layers are position-aware: a keyword only counts where a parser would
  * see it as code, never as a property name (`obj.export`, `{ class: 1 }`).
  */
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, lstatSync, readFileSync, readlinkSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { join, sep } from 'node:path';
 
 // Keywords after which a `/` opens a regex literal (they expect an expression).
 const VALUE_KEYWORDS = new Set([
@@ -624,24 +624,121 @@ const commonJsTokens = [
   ['require() call', /\brequire\s*\(/],
 ];
 
+// A FAIL line for a symbolic link the walk refuses to follow, or null when the
+// link could not have been part of the scan anyway: a resolvable link to a
+// non-directory whose name does not match `scanned` (a `.sh` link, say) was
+// never read by this walk and still is not, so it is not news. Everything else
+// is reported instead of skipped — a link to a directory (the walk would have
+// descended), a link whose name would have been scanned, and a link that cannot
+// be resolved at all (it may have been either).
+function linkProblem(path, root, realRoot, scanned) {
+  let raw = null;
+  try {
+    raw = readlinkSync(path);
+  } catch (error) {
+    raw = null;
+  }
+  let target = null;
+  try {
+    target = realpathSync(path);
+  } catch (error) {
+    return (
+      path + ' is an unresolvable symbolic link to ' + (raw === null ? '?' : raw) +
+      ' (' + (error.code || error.message) + ') — the walk never follows a link, so nothing behind it is verified.'
+    );
+  }
+  if (!scanned && !isDirectory(target)) return null;
+  const outside = realRoot !== null && !isInside(target, realRoot) ? ' (outside ' + root + ')' : '';
+  return (
+    path + ' is a symbolic link to ' + target + outside +
+    ' — the walk never follows a link, so nothing behind it is verified.'
+  );
+}
+
+function isDirectory(path) {
+  try {
+    return statSync(path).isDirectory();
+  } catch (error) {
+    return false;
+  }
+}
+
+function isInside(target, realRoot) {
+  return target === realRoot || target.startsWith(realRoot + sep);
+}
+
+function tryRealpath(path) {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    return null;
+  }
+}
+
 // Every tree the checker walks is walked recursively: a construct hidden one
 // directory down (`app/scripts/lib/deep.js`) is still shipped and still breaks
 // the device. Sorted so the OK banner and the FAIL order are stable.
+//
+// The walk never follows a symbolic link and never lets `stat` follow one for
+// it. Measured before this (round 3): `ln -s /nonexistent app/scripts/broken.js`
+// and a self-referential `app/scripts/loop -> .` both ended in an uncaught
+// node:fs stack trace (ENOENT, ELOOP — rc 1 either way, but the FAIL was
+// unreadable), and `ln -s /tmp app/scripts/ext` followed a directory OUTSIDE the
+// tree and scanned it (rc 1 on a file under /tmp, a tree the app never ships).
+// Dirents from readdir carry `lstat` semantics, so `isSymbolicLink()` answers
+// "is this a link" without following it: a link is never descended into and
+// never read, and it is reported unless it resolves to a non-directory this
+// walk would have ignored anyway. An unreadable directory is reported the same
+// way instead of throwing.
 function listFilesRecursive(root, suffix) {
-  const out = [];
+  const names = [];
+  const problems = [];
+  const realRoot = tryRealpath(root);
+  let rootStat = null;
+  try {
+    rootStat = lstatSync(root);
+  } catch (error) {
+    rootStat = null;
+  }
+  if (rootStat === null) {
+    problems.push(root + ' cannot be read — nothing under it is verified.');
+    return { names, problems };
+  }
+  if (rootStat.isSymbolicLink()) {
+    // A symlinked ROOT (`app/js -> /tmp/x`) is the same hazard one level up:
+    // lstat sees the link, so the scan refuses instead of reading through it.
+    problems.push(linkProblem(root, root, realRoot, true));
+    return { names, problems };
+  }
+  if (!rootStat.isDirectory()) {
+    problems.push(root + ' is not a directory — there is nothing to scan.');
+    return { names, problems };
+  }
   const stack = [root];
   while (stack.length > 0) {
     const current = stack.pop();
-    for (const name of readdirSync(current)) {
-      const path = join(current, name);
-      if (statSync(path).isDirectory()) {
+    let entries;
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch (error) {
+      problems.push(
+        current + ' cannot be read (' + (error.code || error.message) + ') — nothing under it is verified.'
+      );
+      continue;
+    }
+    for (const entry of entries) {
+      const path = join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        const problem = linkProblem(path, root, realRoot, entry.name.endsWith(suffix));
+        if (problem !== null) problems.push(problem);
+      } else if (entry.isDirectory()) {
         stack.push(path);
-      } else if (name.endsWith(suffix)) {
-        out.push(path);
+      } else if (entry.name.endsWith(suffix)) {
+        names.push(path);
       }
     }
   }
-  return out.sort();
+  return { names: names.sort(), problems };
 }
 
 // Names are relative to `root`: the recursive lister returns nested paths
@@ -655,17 +752,25 @@ function relativeTo(root, paths) {
 // recursively — a construct one directory down (`app/scripts/lib/deep.js`) is
 // shipped and breaks the device just the same — and a tree that is missing, or
 // holds none of the files it is supposed to hold, is a FAIL. A gate that passes
-// because the code it guards went away is worse than no gate.
+// because the code it guards went away is worse than no gate. An entry the walk
+// could not verify (a symbolic link, an unreadable directory) is reported for
+// the same reason and counts as a failure too.
+//
+// `names` are relative to `root` (see relativeTo); `failed` is the caller's
+// verdict for this tree, so a caller cannot forget the failure a problem means.
 function filesIn(root, suffix, missingHint, emptyReason) {
   if (!existsSync(root)) {
     console.error('FAIL: ' + root + ' does not exist — ' + missingHint);
-    return [];
+    return { names: [], failed: true };
   }
-  const names = relativeTo(root, listFilesRecursive(root, suffix));
+  const { names, problems } = listFilesRecursive(root, suffix);
   if (names.length === 0) {
     console.error('FAIL: no ' + suffix + ' files found under ' + root + ' — ' + emptyReason);
   }
-  return names;
+  for (const problem of problems) {
+    console.error('FAIL: ' + problem);
+  }
+  return { names: relativeTo(root, names), failed: names.length === 0 || problems.length > 0 };
 }
 
 // One scanner for every tree we check: the rule list supplies both its patterns
@@ -693,15 +798,15 @@ function scanTokens(root, names, prefix, tokens, suffix = '') {
 
 let failed = false;
 const checked = filesIn(dir, '.js', 'run `npm run build` first.', 'cannot check the webview scripts.');
-if (checked.length === 0) failed = true;
-if (scanTokens(dir, checked, '', patterns)) {
+if (checked.failed) failed = true;
+if (scanTokens(dir, checked.names, '', patterns)) {
   failed = true;
 }
-if (scanRegexFeatures(dir, checked, '')) {
+if (scanRegexFeatures(dir, checked.names, '')) {
   failed = true;
 }
 // app/js is loaded by the webview as plain <script>: CommonJS tokens break it.
-if (scanTokens(dir, checked, '', commonJsTokens, ' — app/js must stay plain-script <script>-loadable')) {
+if (scanTokens(dir, checked.names, '', commonJsTokens, ' — app/js must stay plain-script <script>-loadable')) {
   failed = true;
 }
 
@@ -714,11 +819,11 @@ const scriptFiles = filesIn(
   'refusing to pass without the TV-side scripts.',
   'cannot check the TV-side scripts.'
 );
-if (scriptFiles.length === 0) {
+if (scriptFiles.failed) {
   failed = true;
 } else {
-  if (scanTokens(scriptsDir, scriptFiles, scriptsDir + '/', patterns)) failed = true;
-  if (scanRegexFeatures(scriptsDir, scriptFiles, scriptsDir + '/')) failed = true;
+  if (scanTokens(scriptsDir, scriptFiles.names, scriptsDir + '/', patterns)) failed = true;
+  if (scanRegexFeatures(scriptsDir, scriptFiles.names, scriptsDir + '/')) failed = true;
 }
 
 // Layer 1 of the plain-script guard: the source itself must never use
@@ -730,8 +835,8 @@ const srcFiles = filesIn(
   'the plain-script guard would silently skip.',
   'cannot check the plain-script guard.'
 );
-if (srcFiles.length === 0) failed = true;
-for (const file of srcFiles) {
+if (srcFiles.failed) failed = true;
+for (const file of srcFiles.names) {
   const path = join(srcDir, file);
   if (reportMaskErrors(path, path)) failed = true;
   const { text } = masked(path);
@@ -750,6 +855,6 @@ if (failed) {
   process.exit(1);
 }
 
-console.log('OK: app/js has nothing on the pattern list (' + checked.join(', ') + ')');
-console.log('OK: app/scripts/*.js has nothing on the pattern list (' + scriptFiles.join(', ') + ')');
+console.log('OK: app/js has nothing on the pattern list (' + checked.names.join(', ') + ')');
+console.log('OK: app/scripts/*.js has nothing on the pattern list (' + scriptFiles.names.join(', ') + ')');
 console.log('OK: plain-script guard — src/**/*.ts import/export-free, app/js/*.js CommonJS-token-free');
