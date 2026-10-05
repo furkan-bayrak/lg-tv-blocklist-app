@@ -13,6 +13,11 @@
  * @@STATUS-BEGIN/@@STATUS-END (parsed by src/status.ts). The UI never parses
  * un-delimited stdout.
  *
+ * Tier (S6a T3): the SAFE/STRICT switch is two constants + two wrappers
+ * (setTierSafe/setTierStrict). The only thing that varies between them is argv,
+ * and it is a compile-time literal, so no user-supplied string ever reaches a
+ * command line.
+ *
  * Platform ceilings (measured on the G1 during S0, see the S0 spike report):
  *  - /exec stdout cap is 204800 bytes; at the cap the child is killed and
  *    returnValue comes back false even though the transport exits 0. Always
@@ -78,6 +83,8 @@ interface LgBlocklistBridgeApi {
   runCheck(onDone: (response: HbExecResponse) => void): void;
   runApply(onDone: (response: HbExecResponse) => void): void;
   runRollback(onDone: (response: HbExecResponse) => void): void;
+  setTierSafe(onDone: (response: HbExecResponse) => void): void;
+  setTierStrict(onDone: (response: HbExecResponse) => void): void;
 }
 
 var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi {
@@ -103,6 +110,13 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
   // tests/ts/bridge.test.mjs.
   var CMD_APPLY = 'sh ' + APP_DIR + '/scripts/apply.sh';
   var CMD_ROLLBACK = 'sh ' + APP_DIR + '/scripts/rollback.sh';
+  // S6a T3: the tier switch. TWO constants, one per allowed value — the tier is
+  // never assembled at runtime and never comes from the DOM, storage, a query
+  // parameter or the network, so there is no string that could carry user
+  // content into the command line. tier.sh itself re-checks the argument and
+  // refuses anything that is not exactly safe|strict (writing nothing).
+  var CMD_TIER_SAFE = 'sh ' + APP_DIR + '/scripts/tier.sh safe';
+  var CMD_TIER_STRICT = 'sh ' + APP_DIR + '/scripts/tier.sh strict';
 
   function getRequestTarget(): WebOSRequestTarget | null {
     if (typeof webOS === 'undefined' || !webOS) {
@@ -214,6 +228,14 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
     exec(CMD_ROLLBACK, onDone);
   }
 
+  function setTierSafe(onDone: (response: HbExecResponse) => void): void {
+    exec(CMD_TIER_SAFE, onDone);
+  }
+
+  function setTierStrict(onDone: (response: HbExecResponse) => void): void {
+    exec(CMD_TIER_STRICT, onDone);
+  }
+
   return {
     available: available,
     diagnose: diagnose,
@@ -224,6 +246,8 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
     readHookState: readHookState,
     runCheck: runCheck,
     runApply: runApply,
-    runRollback: runRollback
+    runRollback: runRollback,
+    setTierSafe: setTierSafe,
+    setTierStrict: setTierStrict
   };
 })();

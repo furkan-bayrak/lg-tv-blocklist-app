@@ -13,6 +13,18 @@
     <div id="prot-headline" class="prot-headline">Checking protection…</div>
     <div id="prot-text" class="prot-text">Reading the current state from the TV.</div>
     <button id="btn-protect" class="prot-button" disabled>Please wait…</button>
+    <!-- S6a T3: which list the TV is running (live-probed, tier= in the status
+         block) plus the SAFE/STRICT switch. The active tier is marked with
+         .is-active; both buttons stay focusable for remote navigation and the
+         click handler refuses a switch while the tier is unknown. -->
+    <div class="tier">
+      <div id="tier-current" class="tier-current">Tier: unknown</div>
+      <div class="tier-buttons">
+        <button id="btn-tier-safe" class="tier-button" aria-pressed="false">SAFE</button>
+        <button id="btn-tier-strict" class="tier-button" aria-pressed="false">STRICT</button>
+      </div>
+      <div id="tier-note" class="tier-note">Reading the active tier from the TV.</div>
+    </div>
   </section>
   <p id="status">Starting…</p>
   <div id="panel">Status: not checked yet.</div>

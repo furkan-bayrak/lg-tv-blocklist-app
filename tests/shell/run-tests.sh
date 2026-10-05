@@ -297,10 +297,10 @@ BASE_PATH="$PATH"
 new_app_sandbox() {
   SB="$(mktemp -d "$SB_ROOT/sb.XXXXXX")"
   mkdir -p "$SB/appdir/scripts" "$SB/appdir/filter" "$SB/hookdir" "$SB/state" "$SB/bin"
-  cp "$SCRIPTS_SRC/common.sh" "$SCRIPTS_SRC/apply.sh" "$SCRIPTS_SRC/rollback.sh" "$SCRIPTS_SRC/keeper.sh" "$SCRIPTS_SRC/guard.sh" "$SCRIPTS_SRC/check.sh" "$SCRIPTS_SRC/boot.sh" "$SCRIPTS_SRC/dnsq.sh" "$SB/appdir/scripts/"
+  cp "$SCRIPTS_SRC/common.sh" "$SCRIPTS_SRC/apply.sh" "$SCRIPTS_SRC/rollback.sh" "$SCRIPTS_SRC/keeper.sh" "$SCRIPTS_SRC/guard.sh" "$SCRIPTS_SRC/check.sh" "$SCRIPTS_SRC/boot.sh" "$SCRIPTS_SRC/dnsq.sh" "$SCRIPTS_SRC/tier.sh" "$SB/appdir/scripts/"
   cp "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template" "$FILTER_SRC/filter-input.txt" "$SB/appdir/filter/"
   cp "$STUBBIN/iptables" "$STUBBIN/luna-send" "$STUBBIN/dnsq" "$STUBBIN/node" "$STUBBIN/fake-dnscrypt-proxy" "$STUBBIN/fake-dnscrypt-proxy-dead" "$SB/bin/"
-  chmod +x "$SB/appdir/scripts/apply.sh" "$SB/appdir/scripts/rollback.sh" "$SB/appdir/scripts/keeper.sh" "$SB/appdir/scripts/guard.sh" "$SB/appdir/scripts/check.sh" "$SB/appdir/scripts/boot.sh" "$SB/appdir/scripts/dnsq.sh" "$SB/bin/iptables" "$SB/bin/luna-send" "$SB/bin/dnsq" "$SB/bin/node" "$SB/bin/fake-dnscrypt-proxy" "$SB/bin/fake-dnscrypt-proxy-dead"
+  chmod +x "$SB/appdir/scripts/apply.sh" "$SB/appdir/scripts/rollback.sh" "$SB/appdir/scripts/keeper.sh" "$SB/appdir/scripts/guard.sh" "$SB/appdir/scripts/check.sh" "$SB/appdir/scripts/boot.sh" "$SB/appdir/scripts/dnsq.sh" "$SB/appdir/scripts/tier.sh" "$SB/bin/iptables" "$SB/bin/luna-send" "$SB/bin/dnsq" "$SB/bin/node" "$SB/bin/fake-dnscrypt-proxy" "$SB/bin/fake-dnscrypt-proxy-dead"
   # S4/T3: default "filter listening" fixture for the keeper's cheap probe
   # (port 5335 = 0x14D7, local 127.0.0.1, state 0A = LISTEN). Tests that need
   # "device without the port" overwrite this file after new_app_sandbox.
@@ -1163,6 +1163,85 @@ tier_sandbox
 printf '%s\n' '-not-in-the-list.example' > "$SB/state/overrides.txt"
 OUT="$(probe_run materialize 192.168.5.5)"
 if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ] && cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt"; then ok "overrides: unknown '-name' is a silent no-op"; else no "overrides: unknown '-name' is a silent no-op" "got [$OUT]"; fi
+cleanup_app_sandbox
+
+# ==================== S6a T3: the tier switch entrypoint (tier.sh) ============
+# tier.sh takes the only argument the app can send — a compile-time constant in
+# src/bridge.ts, 'safe' or 'strict' — and writes the tier state key. Nothing
+# else may steer it, and it must never touch protection: the UI re-applies
+# through the existing apply.sh, so this stays a single-key write.
+run_tier() {  # run_tier [args...]; sets OUT + RC — fixed entrypoint WITH argv
+  OUT="$(env PATH="$SB/bin:$BASE_PATH" \
+    LGTVB_STATE_DIR="$SB/state" LGTVB_HOOK_DIR="$SB/hookdir" \
+    LGTVB_DNSQ="$SB/bin/dnsq" LGTVB_FILTER_BIN="$SB/bin/fake-dnscrypt-proxy" \
+    LGTVB_TARGETS_FILE="$SB/targets" LGTVB_PROC_TCP="$SB/proc_tcp" \
+    TEST_LOG="$TEST_LOG" TEST_IPT_STATE="$TEST_IPT_STATE" \
+    "$SH" "$SB/appdir/scripts/tier.sh" "$@" 2>"$SB/stderr")"
+  RC=$?
+}
+
+# --- T3 case 1: the switch writes the key, and the status block shows it ------
+tier_sandbox
+printf 'upstream=192.168.5.5\npointer=off\n' > "$SB/state/state"
+run_tier strict
+if [ "$RC" -eq 0 ]; then ok "tier.sh: 'strict' accepted (rc 0)"; else no "tier.sh: 'strict' accepted (rc 0)" "rc=$RC stderr=[$(cat "$SB/stderr")]"; fi
+if chk_state '^tier=strict$'; then ok "tier.sh: writes tier=strict"; else no "tier.sh: writes tier=strict" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+if printf '%s\n' "$OUT" | grep -qx 'reason=strict'; then ok "tier.sh: echoes the fixed result block"; else no "tier.sh: echoes the fixed result block" "OUT: $(printf '%s\n' "$OUT" | tr '\n' ' ')"; fi
+if jrnl 'tier-set tier=strict'; then ok "tier.sh: journals the change (audit trail)"; else no "tier.sh: journals the change (audit trail)" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+if grep -qx 'upstream=192.168.5.5' "$SB/state/state" && grep -qx 'pointer=off' "$SB/state/state"; then ok "tier.sh: sibling state keys survive"; else no "tier.sh: sibling state keys survive" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+if [ "$(grep -c '^tier=' "$SB/state/state")" = "1" ]; then ok "tier.sh: exactly one tier key"; else no "tier.sh: exactly one tier key" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+run_check_nostub
+if printf '%s\n' "$OUT" | grep -qx 'tier=strict'; then ok "tier.sh: switch visible in the @@STATUS block"; else no "tier.sh: switch visible in the @@STATUS block" "OUT: $(printf '%s\n' "$OUT" | tr '\n' ' ')"; fi
+# The switch alone must not start, stop, reroute or lock anything.
+if [ ! -s "$TEST_LOG" ]; then ok "tier.sh: no rule/filter commands (nothing restarted)"; else no "tier.sh: no rule/filter commands (nothing restarted)" "$(head -3 "$TEST_LOG")"; fi
+if [ ! -d "$SB/state/lock" ]; then ok "tier.sh: takes no lock"; else no "tier.sh: takes no lock" "lock dir present"; fi
+if [ ! -f "$SB/state/filter.pid" ] && [ ! -f "$SB/state/gaveup" ]; then ok "tier.sh: no filter pid, no giveup marker"; else no "tier.sh: no filter pid, no giveup marker" "$(ls "$SB/state")"; fi
+cleanup_app_sandbox
+
+# --- T3 case 2: the switch changes the list the next materialize writes -------
+tier_sandbox
+: > "$SB/state/state"
+run_tier strict
+probe_run materialize 192.168.5.5 >/dev/null
+if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-strict.txt"; then ok "tier.sh strict: next materialize uses the STRICT preset"; else no "tier.sh strict: next materialize uses the STRICT preset" "diff: $(diff "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-strict.txt" 2>&1 | head -3)"; fi
+run_tier safe
+if [ "$RC" -eq 0 ] && chk_state '^tier=safe$'; then ok "tier.sh: switching back to safe"; else no "tier.sh: switching back to safe" "rc=$RC state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+probe_run materialize 192.168.5.5 >/dev/null
+if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt"; then ok "tier.sh safe: next materialize uses the SAFE preset"; else no "tier.sh safe: next materialize uses the SAFE preset" "diff: $(diff "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt" 2>&1 | head -3)"; fi
+cleanup_app_sandbox
+
+# --- T3 case 3: anything that is not exactly safe|strict is refused ----------
+# A refused call must exit non-zero AND leave the previous tier in place: a
+# half-accepted argument would let a caller believe a tier it never wrote.
+tier_sandbox
+printf 'tier=safe\n' > "$SB/state/state"
+for bad in 'aggressive' '' 'STRICT' 'safe ' ' safe' 'strict;id' '*' './safe' 'safe\nstrict'; do
+  run_tier "$bad"
+  if [ "$RC" -ne 0 ]; then ok "tier.sh refuses [${bad}]"; else no "tier.sh refuses [${bad}]" "rc=0 OUT=[$(printf '%s\n' "$OUT" | tr '\n' ' ')]"; fi
+  if chk_state '^tier=safe$' && [ "$(grep -c '^tier=' "$SB/state/state")" = "1" ]; then ok "tier.sh [${bad}]: state untouched"; else no "tier.sh [${bad}]: state untouched" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+  if [ -s "$SB/stderr" ]; then ok "tier.sh [${bad}]: says why on stderr"; else no "tier.sh [${bad}]: says why on stderr" "stderr empty"; fi
+done
+run_tier                       # no argv at all
+if [ "$RC" -ne 0 ]; then ok "tier.sh: no argument refused"; else no "tier.sh: no argument refused" "rc=0"; fi
+run_tier strict extra
+if [ "$RC" -ne 0 ]; then ok "tier.sh: extra argument refused"; else no "tier.sh: extra argument refused" "rc=0"; fi
+if chk_state '^tier=safe$' && [ "$(grep -c '^tier=' "$SB/state/state")" = "1" ]; then ok "tier.sh: every refused call wrote nothing"; else no "tier.sh: every refused call wrote nothing" "state: $(cat "$SB/state/state" 2>/dev/null)"; fi
+if [ ! -s "$TEST_LOG" ]; then ok "tier.sh refused calls: no rule/filter commands"; else no "tier.sh refused calls: no rule/filter commands" "$(head -3 "$TEST_LOG")"; fi
+cleanup_app_sandbox
+
+# --- T3 case 4: an unusable state path is a failure, never a false success ---
+# A regular file where the state directory belongs: mkdir, the temp write and the
+# read-back all fail, so the exit code must not claim a write that never landed.
+# (chmod on the state DIR cannot express this — ensure_state deliberately makes
+# the owner of the state dir writable again.)
+tier_sandbox
+: > "$SB/not-a-dir"
+OUT="$(env PATH="$SB/bin:$BASE_PATH" LGTVB_STATE_DIR="$SB/not-a-dir" \
+  LGTVB_HOOK_DIR="$SB/hookdir" "$SH" "$SB/appdir/scripts/tier.sh" strict 2>"$SB/stderr")"
+RC=$?
+if [ "$RC" -ne 0 ]; then ok "tier.sh: unusable state path → non-zero exit"; else no "tier.sh: unusable state path → non-zero exit" "rc=0 (claimed a write that did not happen) OUT=[$(printf '%s\n' "$OUT" | tr '\n' ' ')]"; fi
+if [ -s "$SB/stderr" ]; then ok "tier.sh: unusable state path names the failure"; else no "tier.sh: unusable state path names the failure" "stderr empty"; fi
+if [ ! -s "$SB/not-a-dir" ]; then ok "tier.sh: unusable state path left untouched"; else no "tier.sh: unusable state path left untouched" "content: $(cat "$SB/not-a-dir")"; fi
 cleanup_app_sandbox
 
 # --- Fix 2: keeper — stale lock (dead pid) cleared, keeper proceeds -----------

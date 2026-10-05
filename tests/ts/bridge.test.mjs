@@ -47,7 +47,8 @@ test('public API is exactly the fixed wrapper set — no generic exec', () => {
     Object.keys(bridge).sort(),
     [
       'available', 'diagnose', 'getConfiguration', 'libVersion', 'readHookState',
-      'registerHook', 'removeHook', 'runCheck', 'runApply', 'runRollback'
+      'registerHook', 'removeHook', 'runCheck', 'runApply', 'runRollback',
+      'setTierSafe', 'setTierStrict'
     ].sort()
   );
   assert.equal(bridge.exec, undefined);
@@ -85,6 +86,8 @@ test('every fixed command stays inside the conservative character set', () => {
   bridge.runCheck(noop);
   bridge.runApply(noop);
   bridge.runRollback(noop);
+  bridge.setTierSafe(noop);
+  bridge.setTierStrict(noop);
   // `+` is required by the reviewed register command (`chmod +x`).
   const allowed = /^[A-Za-z0-9 \/._&+-]+$/;
   for (const call of calls) {
@@ -116,4 +119,36 @@ test('getConfiguration goes through the same service without a command', () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].method, 'getConfiguration');
   assert.deepEqual(calls[0].parameters, {});
+});
+
+// --- S6a T3: the tier switch ------------------------------------------------
+
+test('setTierSafe / setTierStrict send exactly the fixed tier.sh commands', () => {
+  const { bridge, calls } = loadBridge();
+  bridge.setTierSafe(() => {});
+  bridge.setTierStrict(() => {});
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    assert.equal(call.uri, 'luna://org.webosbrew.hbchannel.service');
+    assert.equal(call.method, 'exec');
+  }
+  assert.equal(calls[0].parameters.command, 'sh ' + APP_DIR + '/scripts/tier.sh safe');
+  assert.equal(calls[1].parameters.command, 'sh ' + APP_DIR + '/scripts/tier.sh strict');
+});
+
+test('the tier argument is fixed per wrapper: caller arguments cannot reach argv', () => {
+  const { bridge, calls } = loadBridge();
+  const seen = [];
+  // Extra arguments (and a tier value the caller would rather send) are ignored
+  // by design: each wrapper owns one constant command string, so no DOM,
+  // storage, query or network value can ever become argv.
+  bridge.setTierSafe((response) => seen.push(response), 'strict; rm -rf /');
+  bridge.setTierStrict((response) => seen.push(response), 'safe');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].parameters.command, 'sh ' + APP_DIR + '/scripts/tier.sh safe');
+  assert.equal(calls[1].parameters.command, 'sh ' + APP_DIR + '/scripts/tier.sh strict');
+  assert.deepEqual(seen.map((response) => response.returnValue), [true, true]);
+  // There is no generic tier setter that would take the value as data.
+  assert.equal(bridge.setTier, undefined);
+  assert.equal(bridge.setTierValue, undefined);
 });

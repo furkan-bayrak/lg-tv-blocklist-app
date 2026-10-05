@@ -24,6 +24,15 @@
  * (native button behavior). No framework, no runtime dependencies (design
  * spec §3).
  *
+ * S6a T3: the tier row (inside the protection area) shows which list the TV is
+ * running and offers the SAFE/STRICT switch. Both facts come from the parsed
+ * block — never from the switch command's own claim — and the switch is only
+ * offered when a block has been parsed, because without one the app cannot say
+ * which tier is active. Switching writes the tier through the fixed tier.sh
+ * wrapper, then re-applies protection through the EXISTING apply flow while the
+ * filter is running (that is what restarts it with the new list); no new
+ * privileged command was added for it.
+ *
  * Status parsing lives in src/status.ts — like src/bridge.ts it is a plain
  * script exposing one global (LgStatus), not a module: the TV loads the
  * compiled JS with plain <script> tags, so CommonJS output must never appear.
@@ -46,8 +55,18 @@
   var protHeadline = el('prot-headline');
   var protText = el('prot-text');
   var protectButton = el('btn-protect') as HTMLButtonElement;
+  // S6a T3: the tier row lives inside the protection area (which tier is
+  // running, and the SAFE/STRICT switch next to it).
+  var tierCurrent = el('tier-current');
+  var tierNote = el('tier-note');
+  var tierSafeButton = el('btn-tier-safe') as HTMLButtonElement;
+  var tierStrictButton = el('btn-tier-strict') as HTMLButtonElement;
+  // Arrow-key order follows the visual order, tier buttons included: they are
+  // never disabled (a disabled button cannot take remote focus), and every
+  // guard they need lives in the click handler instead.
   var buttons: HTMLElement[] = [
-    protectButton, el('btn-refresh'), el('btn-check'), el('btn-state'), el('btn-register'), el('btn-remove')
+    protectButton, tierSafeButton, tierStrictButton, el('btn-refresh'), el('btn-check'),
+    el('btn-state'), el('btn-register'), el('btn-remove')
   ];
   var focusIndex = 0;
   var busy = false;
@@ -55,6 +74,11 @@
   // What the protection button does right now; null until the first status
   // block arrives (or while the TV state could not be read).
   var protectAction: 'turn-on' | 'turn-off' | 'blocked' | null = null;
+  // Last live-probed truth (never a command's own claim): the tier switch
+  // re-applies protection only while the filter is actually running, and the
+  // active tier is only ever the one a parsed block reported.
+  var protectionOn = false;
+  var currentTier: 'safe' | 'strict' | null = null;
 
   function show(statusText: string, bodyText: string): void {
     statusLine.textContent = statusText;
@@ -122,6 +146,7 @@
 
   function renderProtection(state: ProtectState): void {
     protection.className = 'protection is-' + state;
+    protectionOn = state === 'on';
     if (state === 'on') {
       protHeadline.textContent = 'Protection is ON';
       protText.textContent = 'LG ad and tracking domains are blocked on this TV.';
@@ -155,7 +180,122 @@
       protectAction = null;
       protectButton.textContent = 'Not available';
       protectButton.disabled = true;
+      // No parsed block → no tier. Render the unknown tier rather than keeping
+      // the last one on screen: the panel must never claim a tier it could not
+      // read, and the switch is refused until a block arrives.
+      renderTier(null);
     }
+  }
+
+  // ---- tier (SAFE/STRICT) ---------------------------------------------------
+
+  // Renders ONLY from the live-probed block (or null when there is none).
+  function renderTier(tier: 'safe' | 'strict' | null): void {
+    currentTier = tier;
+    tierSafeButton.className = 'tier-button' + (tier === 'safe' ? ' is-active' : '');
+    tierStrictButton.className = 'tier-button' + (tier === 'strict' ? ' is-active' : '');
+    tierSafeButton.setAttribute('aria-pressed', tier === 'safe' ? 'true' : 'false');
+    tierStrictButton.setAttribute('aria-pressed', tier === 'strict' ? 'true' : 'false');
+    if (tier === 'safe') {
+      tierCurrent.textContent = 'Tier: SAFE (default)';
+      tierNote.textContent =
+        'SAFE blocks the known LG ad and tracking domains. Switching rewrites the list and ' +
+        'restarts the filter for a few seconds.';
+    } else if (tier === 'strict') {
+      tierCurrent.textContent = 'Tier: STRICT';
+      tierNote.textContent =
+        'STRICT blocks the SAFE domains plus whole LG zones: the store and LG account login can ' +
+        'break, ThinQ and LG Channels stop working, and firmware updates are frozen. Switching ' +
+        'rewrites the list and restarts the filter for a few seconds.';
+    } else {
+      tierCurrent.textContent = 'Tier: unknown';
+      tierNote.textContent =
+        'The active tier could not be read from the TV. Press "Refresh status" to try again.';
+    }
+  }
+
+  function tierLabel(tier: 'safe' | 'strict'): string {
+    return tier === 'strict' ? 'STRICT' : 'SAFE';
+  }
+
+  // Message for the re-apply that follows a tier change: parsed with the same
+  // strict result parser as the protection actions, so script text is never
+  // rendered as a message.
+  function tierApplyMessage(label: string, response: HbExecResponse): string {
+    if (!response.returnValue) {
+      return 'The TV didn\'t run the command to re-apply protection. Press "Turn on protection" ' +
+        'to try again.';
+    }
+    var parsed = parseResult(response.stdoutString || '');
+    if (!parsed) {
+      return 'The TV didn\'t return a clear result. Check the status below.';
+    }
+    if (parsed.result === 'on') {
+      return 'Protection is on with the ' + label + ' list.';
+    }
+    return reasonMessage(parsed.reason);
+  }
+
+  function runTierSwitch(target: 'safe' | 'strict'): void {
+    // Guards first, and they run before the busy flag is taken: without a parsed
+    // block there is no known current tier, so the app refuses instead of
+    // guessing (or writing a tier it cannot confirm afterwards).
+    if (currentTier === null) {
+      show('Tier not switchable yet',
+        'The active tier could not be read from the TV. Press "Refresh status" first - the app ' +
+        'never changes a tier it cannot confirm.');
+      return;
+    }
+    if (currentTier === target) {
+      show('Tier already active',
+        'The TV is already using the ' + tierLabel(target) + ' list.');
+      return;
+    }
+    runGuarded(function (): void {
+      if (!LgBlocklistBridge.available()) {
+        show('Bridge unavailable', LgBlocklistBridge.diagnose());
+        finish();
+        return;
+      }
+      var label = tierLabel(target);
+      var detail = protectionOn
+        ? 'Saving the tier, then re-applying protection so the filter restarts with the new ' +
+          'list (can take a few seconds).'
+        : 'Saving the tier. Protection is off, so nothing is restarted.';
+      show('Switching to ' + label + '…', detail);
+      var onWritten = function (response: HbExecResponse): void {
+        if (!response.returnValue) {
+          finish();
+          show('Tier not saved', formatExec(response));
+          return;
+        }
+        if (!protectionOn) {
+          // Nothing to restart: persist-and-report. The refresh below shows the
+          // tier the TV now reports, which is the only claim the panel makes.
+          refreshStatusInternal(function (): void {
+            show('Tier saved: ' + label,
+              'Protection is off, so the filter was not restarted. The ' + label +
+              ' list is used next time protection is turned on.');
+          });
+          return;
+        }
+        // The filter is running: re-apply through the EXISTING apply flow (same
+        // fixed command, same single-flight flag) so the new list is
+        // materialized and the filter restarts with it.
+        var onApplied = function (applyResponse: HbExecResponse): void {
+          var message = tierApplyMessage(label, applyResponse);
+          refreshStatusInternal(function (): void {
+            show(message, formatExec(applyResponse));
+          });
+        };
+        LgBlocklistBridge.runApply(onApplied);
+      };
+      if (target === 'safe') {
+        LgBlocklistBridge.setTierSafe(onWritten);
+      } else {
+        LgBlocklistBridge.setTierStrict(onWritten);
+      }
+    });
   }
 
   // ---- action result parsing (fixed keys only) ------------------------------
@@ -426,6 +566,7 @@
   function statusPanel(block: TvStatus): string {
     return [
       'Protection: ' + modeLabel(block),
+      'Tier: ' + tierLabel(block.tier) + (block.tier === 'safe' ? ' (default)' : ''),
       'Filter: ' + (block.filter === 'up' ? 'running' : 'not running'),
       'Firewall rules: ' + ruleLabel(block.rule),
       'Keeper: ' + (block.keeper === 'up' ? 'running' : 'not running'),
@@ -493,6 +634,7 @@
       panel.textContent = statusPanel(block);
       var state = protectState(block);
       renderProtection(state);
+      renderTier(block.tier);
       show(stateHeadline(state), 'Raw status block:\n' + rawPreview(raw));
       if (after) {
         after();
@@ -516,6 +658,12 @@
     }
   });
   el('btn-refresh').addEventListener('click', refreshStatus);
+  tierSafeButton.addEventListener('click', function (): void {
+    runTierSwitch('safe');
+  });
+  tierStrictButton.addEventListener('click', function (): void {
+    runTierSwitch('strict');
+  });
   el('btn-check').addEventListener('click', checkBridge);
   el('btn-state').addEventListener('click', showHookState);
   el('btn-register').addEventListener('click', registerHook);
@@ -536,6 +684,11 @@
 
   focusIndex = 0;
   buttons[0].focus();
+
+  // The tier row starts in the unknown state (the same text index.html ships as
+  // its pre-script fallback), so the app owns its initial render and never
+  // inherits a tier claim from markup.
+  renderTier(null);
 
   // Review fix (S1): state the concrete reason when the bridge cannot work instead
   // of a bare "Bridge unavailable". webOS.* comes from the vendored webOSTV.js,
