@@ -408,20 +408,29 @@ function reportMaskErrors(path, label) {
 
 const dir = 'app/js';
 const scriptsDir = 'app/scripts';
-// True when `word` appears as CODE: not as a member name (`obj.class`) and not
-// as an object-literal key (`{ class: 1 }`) — the two legal ES5 neighbours a
+// True when any of `words` appears as CODE: not as a member name (`obj.class`)
+// and not as an object-literal key (`{ class: 1 }`) — the legal ES5 neighbours a
 // keyword rule must tolerate. Non-code spans are blanked by the masker before
 // any rule runs, so a bare match means a parser would really see the keyword.
-function codeWord(word) {
-  return (text) => {
+function codeWord(...words) {
+  return (text) => codeWordHit(text, words) !== null;
+}
+
+// The first of `words` that appears as code, or null. `import`/`export` cannot
+// legally appear as an identifier at all (ES5 reserves both), so any non-key
+// occurrence is either ESM syntax or a syntax error — both must fail here:
+// both trees are plain scripts, app/js has no module loader and node v8 refuses
+// `import`/`export` outright.
+function codeWordHit(text, words) {
+  for (const word of words) {
     const re = new RegExp('\\b' + word + '\\b', 'g');
     let match;
     while ((match = re.exec(text)) !== null) {
       if (isPropertyName(text, match.index, match[0].length)) continue;
-      return true;
+      return word;
     }
-    return false;
-  };
+  }
+  return null;
 }
 
 // `x.class`, `x.import`, `{ class: 1 }` — ES5 allows reserved-ish words as
@@ -445,6 +454,10 @@ const patterns = [
   // plain `class{}` but the webview's older engine does not, so this stays a
   // policy rule; `obj.class` / `{class: 1}` are legal ES5 and must not fire.
   ['class', codeWord('class')],
+  // ESM syntax: measured rc 0 in both trees before this rule. node v8.17.0
+  // refuses it in app/scripts, and app/js is loaded as plain <script> — there is
+  // no module loader in the webview either.
+  ['ESM import/export statement', codeWord('import', 'export')],
   ['let', /\blet\s/],
   ['const', /\bconst\s/],
   ['async', /\basync\s/],
@@ -575,7 +588,10 @@ for (const file of srcFiles) {
   const path = join(srcDir, file);
   if (reportMaskErrors(path, path)) failed = true;
   const { text } = masked(path);
-  if (/^\s*(?:import|export)\b/m.test(text)) {
+  // Position-aware, not line-anchored: `"use strict"; export const x = 1;`
+  // slipped past the old /^\s*(?:import|export)\b/m guard because the statement
+  // did not start the line.
+  if (codeWordHit(text, ['import', 'export']) !== null) {
     console.error(
       'FAIL: ' + path + ' uses import/export — src must stay plain-script (IIFE globals), not CommonJS modules.'
     );

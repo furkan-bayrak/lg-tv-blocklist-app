@@ -117,6 +117,36 @@ test('fails on top-level import/export under src (plain-script guard unchanged)'
   assert.match(r.stderr, /FAIL: src\/main\.ts uses import\/export/);
 });
 
+// ---------------------------------------------------------------------------
+// Round 2, hole C2: ESM syntax had no rule for app/js or app/scripts (both
+// measured rc 0), and the src guard was line-anchored so any statement on the
+// same line defeated it. Measured with node v8.17.0: `import fs from "fs";`
+// and `export default 1;` are FATAL in app/scripts; app/js is loaded as a
+// plain <script> with no module loader.
+// ---------------------------------------------------------------------------
+test('ESM import/export fails in both trees (node-8 fatal in app/scripts, no loader in app/js)', () => {
+  for (const code of ['import fs from "fs";\n', 'export default 1;\n', 'export const x = 1;\n']) {
+    assertFailsInBothTrees(code.trim(), code, /contains ESM import\/export statement/);
+  }
+});
+
+test('src guard is position-aware: a preceding statement on the same line does not defeat it', () => {
+  for (const code of ['"use strict"; export const x = 1;\n', 'var n = 1; import fs from "fs";\n']) {
+    const r = runChecker({ ...baseFiles(), 'src/main.ts': code });
+    assert.equal(r.status, 1, `expected rc 1 for ${JSON.stringify(code)} (stdout=${r.stdout})`);
+    assert.match(r.stderr, /FAIL: src\/main\.ts uses import\/export/, `stderr=${r.stderr}`);
+  }
+});
+
+test('still passes: import/export in comments and as ES5 property names', () => {
+  const r = runChecker({
+    ...baseFiles(),
+    'app/js/main.js':
+      'var o = { import: 1, export: 2 };\nvar f = o.exports;\n// import fs from "fs" — a comment, not code\n',
+  });
+  assert.equal(r.status, 0, `expected rc 0 (stdout=${r.stdout} stderr=${r.stderr})`);
+});
+
 test('does not false-positive on prose: comments may mention class/let/const/.../=>', () => {
   const r = runChecker({
     ...baseFiles(),
