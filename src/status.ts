@@ -1,17 +1,20 @@
 /**
- * Strict parser for the app's @@STATUS block (schema 3).
+ * Strict parser for the app's @@STATUS block (schema 4).
  *
  * Contract (lockstep with app/scripts/check.sh, same IPK):
  *   - exactly one @@STATUS-BEGIN / @@STATUS-END pair, BEGIN first, END last
- *   - exactly 15 keys, each exactly once: schema, ts, hook, hook_target,
+ *   - exactly 16 keys, each exactly once: schema, ts, hook, hook_target,
  *     scripts, filter, rule, keeper, guard, pointer, gaveup, mode, upstream,
- *     cap, tier
- *   - schema must be exactly '3'
+ *     cap, tier, entries
+ *   - schema must be exactly '4'
  *   - any other line, duplicate key, missing key, malformed value → REJECT
  * Fail-closed: a rejected block makes the panel show its unknown/error state.
  * It must never render a tier (or any other field) it did not parse — which is
  * why the schema-2 block is rejected outright instead of being read with tier
- * defaulted: an older check.sh is not running the tier-aware behaviour.
+ * defaulted: an older check.sh is not running the tier-aware behaviour. For the
+ * same reason the schema was bumped 3 → 4 when `entries` was added (S6b review
+ * F3): a schema-3 block carries no entries count, and a panel that rendered one
+ * would have to invent the number.
  * Never parse un-delimited output; never guess.
  *
  * Plain script, not a module: the TV loads compiled JS with plain <script>
@@ -20,7 +23,7 @@
  */
 
 interface TvStatus {
-  schema: '3';
+  schema: '4';
   ts: number;
   hook: 'linked' | 'other' | 'missing';
   hookTarget: string; // absolute path or 'none'
@@ -35,6 +38,10 @@ interface TvStatus {
   upstream: string; // IPv4 or 'none'
   cap: 'none' | 'dnat' | 'unsupported';
   tier: 'safe' | 'strict';
+  // Count of blocked_names entries in the effective (materialized) list: every
+  // line that is neither a comment nor blank. 0 = no list in place yet; a
+  // published list is never 0 (materialize refuses to publish an empty one).
+  entries: number;
 }
 
 var LgStatus: { parse: (text: string) => TvStatus | null } = (function () {
@@ -42,7 +49,8 @@ var LgStatus: { parse: (text: string) => TvStatus | null } = (function () {
   var END = '@@STATUS-END';
   var KEYS = [
     'schema', 'ts', 'hook', 'hook_target', 'scripts', 'filter', 'rule',
-    'keeper', 'guard', 'pointer', 'gaveup', 'mode', 'upstream', 'cap', 'tier'
+    'keeper', 'guard', 'pointer', 'gaveup', 'mode', 'upstream', 'cap', 'tier',
+    'entries'
   ] as const;
   type Key = (typeof KEYS)[number];
 
@@ -71,7 +79,7 @@ var LgStatus: { parse: (text: string) => TvStatus | null } = (function () {
     return true;
   }
 
-  /** Parse strict schema-3 status text. Returns null on ANY contract violation. */
+  /** Parse strict schema-4 status text. Returns null on ANY contract violation. */
   function parse(text: string): TvStatus | null {
     if (typeof text !== 'string') return null;
     if (text.indexOf('\r') !== -1) return null;
@@ -98,9 +106,13 @@ var LgStatus: { parse: (text: string) => TvStatus | null } = (function () {
     }
 
     const schema = seen.schema as string;
-    if (schema !== '3') return null;
+    if (schema !== '4') return null;
     const tsRaw = seen.ts as string;
     if (!/^\d{1,12}$/.test(tsRaw)) return null;
+    // A count, not a guess: decimal digits only, no sign, no leading spaces, and
+    // bounded well above any list this app can ship (the shipped lists hold ~123).
+    const entriesRaw = seen.entries as string;
+    if (!/^\d{1,7}$/.test(entriesRaw)) return null;
 
     const enumsValid = (() => {
       const keyList = Object.keys(ENUMS);
@@ -120,7 +132,7 @@ var LgStatus: { parse: (text: string) => TvStatus | null } = (function () {
     if (upstream !== 'none' && !isIpv4(upstream)) return null;
 
     return {
-      schema: '3',
+      schema: '4',
       ts: Number(tsRaw),
       hook: seen.hook as TvStatus['hook'],
       hookTarget,
@@ -134,7 +146,8 @@ var LgStatus: { parse: (text: string) => TvStatus | null } = (function () {
       mode: seen.mode as TvStatus['mode'],
       upstream,
       cap: seen.cap as TvStatus['cap'],
-      tier: seen.tier as TvStatus['tier']
+      tier: seen.tier as TvStatus['tier'],
+      entries: Number(entriesRaw)
     };
   }
 

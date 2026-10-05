@@ -1,4 +1,4 @@
-// Unit tests for the compiled status-block parser (app/js/status.js), schema 3.
+// Unit tests for the compiled status-block parser (app/js/status.js), schema 4.
 // Run after `npm run build`:  npm run test:ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,7 +28,7 @@ function parse(text) {
 
 const BLOCK = [
   '@@STATUS-BEGIN',
-  'schema=3',
+  'schema=4',
   'ts=1789550329',
   'hook=linked',
   'hook_target=/media/developer/apps/usr/palm/applications/io.github.furkanbayrak.lgtvblocklist/scripts/boot.sh',
@@ -43,6 +43,7 @@ const BLOCK = [
   'upstream=192.168.179.1',
   'cap=dnat',
   'tier=safe',
+  'entries=20',
   '@@STATUS-END'
 ].join('\n');
 
@@ -50,14 +51,14 @@ function withoutKey(key) {
   return BLOCK.split('\n').filter((line) => !line.startsWith(key + '=')).join('\n');
 }
 
-test('parses the schema-3 sample fixture and returns every typed field', () => {
+test('parses the schema-4 sample fixture and returns every typed field', () => {
   const raw = readFileSync(
-    fileURLToPath(new URL('./fixtures/status-schema3-sample.txt', import.meta.url)),
+    fileURLToPath(new URL('./fixtures/status-schema4-sample.txt', import.meta.url)),
     'utf8'
   );
   const block = parse(raw);
   assert.ok(block);
-  assert.equal(block.schema, '3');
+  assert.equal(block.schema, '4');
   assert.equal(block.ts, 1789550329);
   assert.equal(block.hook, 'linked');
   assert.equal(
@@ -75,6 +76,19 @@ test('parses the schema-3 sample fixture and returns every typed field', () => {
   assert.equal(block.upstream, '192.168.179.1');
   assert.equal(block.cap, 'dnat');
   assert.equal(block.tier, 'safe');
+  assert.equal(block.entries, 20);
+});
+
+test('rejects the old schema-3 block (stale check.sh → entries is never guessed)', () => {
+  const raw = readFileSync(
+    fileURLToPath(new URL('./fixtures/status-schema3-sample.txt', import.meta.url)),
+    'utf8'
+  );
+  // Fail closed: a check.sh from the previous IPK reports schema 3 and carries no
+  // entries count. Rendering the count as 0 would claim "nothing materialized"
+  // about a box whose list is fine, so the richer block is rejected outright —
+  // the same reason the schema-2 capture is rejected.
+  assert.equal(parse(raw), null);
 });
 
 test('rejects the old schema-2 block (stale check.sh → no tier is ever guessed)', () => {
@@ -87,7 +101,7 @@ test('rejects the old schema-2 block (stale check.sh → no tier is ever guessed
   assert.equal(parse(raw), null);
 });
 
-test('rejects the old schema-1 G1 capture (schema must be exactly 3)', () => {
+test('rejects the old schema-1 G1 capture (schema must be exactly 4)', () => {
   const raw = readFileSync(
     fileURLToPath(new URL('./fixtures/real-block-g1.txt', import.meta.url)),
     'utf8'
@@ -105,6 +119,39 @@ test('rejects a block with the cap key missing', () => {
 
 test('rejects a block with the tier key missing', () => {
   assert.equal(parse(withoutKey('tier')), null);
+});
+
+test('rejects a block with the entries key missing', () => {
+  assert.equal(parse(withoutKey('entries')), null);
+});
+
+test('rejects a non-numeric entries count (no guessing a protection state)', () => {
+  assert.equal(parse(BLOCK.replace('entries=20', 'entries=many')), null);
+  assert.equal(parse(BLOCK.replace('entries=20', 'entries=2x0')), null);
+  assert.equal(parse(BLOCK.replace('entries=20', 'entries= 20')), null);
+  assert.equal(parse(BLOCK.replace('entries=20', 'entries=-20')), null);
+  assert.equal(parse(BLOCK.replace('entries=20', 'entries=2.5')), null);
+  assert.equal(parse(BLOCK.replace('entries=20', 'entries=')), null);
+});
+
+test('rejects an entries count beyond the parser bound', () => {
+  assert.equal(parse(BLOCK.replace('entries=20', 'entries=12345678')), null);
+});
+
+test('accepts entries=0 (no list materialized yet)', () => {
+  const block = parse(BLOCK.replace('entries=20', 'entries=0'));
+  assert.ok(block);
+  assert.equal(block.entries, 0);
+});
+
+test('accepts a large entries count and reads it as a number', () => {
+  const block = parse(BLOCK.replace('entries=20', 'entries=1234567'));
+  assert.ok(block);
+  assert.equal(block.entries, 1234567);
+});
+
+test('rejects a duplicate entries key', () => {
+  assert.equal(parse(BLOCK.replace('entries=20', 'entries=20\nentries=0')), null);
 });
 
 test('rejects a duplicate key', () => {
@@ -195,7 +242,7 @@ test('accepts a shuffled key order (keys are position-independent)', () => {
   const body = lines.slice(1, lines.length - 1).reverse();
   const block = parse([lines[0]].concat(body, [lines[lines.length - 1]]).join('\n'));
   assert.ok(block);
-  assert.equal(block.schema, '3');
+  assert.equal(block.schema, '4');
   assert.equal(block.cap, 'dnat');
   assert.equal(block.tier, 'safe');
 });

@@ -1,6 +1,6 @@
 #!/bin/sh
 # check.sh — live status probe. Fixed entrypoint, no args. Prints exactly one
-# @@STATUS-BEGIN/@@STATUS-END block (schema 3, 15 keys). Read-only, fast, root-only friendly.
+# @@STATUS-BEGIN/@@STATUS-END block (schema 4, 16 keys). Read-only, fast, root-only friendly.
 SELF=$(readlink -f "$0" 2>/dev/null); [ -n "$SELF" ] || SELF="$0"
 SELF_DIR=${SELF%/*}
 . "$SELF_DIR/common.sh"
@@ -58,12 +58,20 @@ fi
 # never renders a tier the box is not on. Read-only: check.sh never writes it.
 tier=$(tier_get)
 
+# S6b review F3: how many blocked_names ENTRIES the effective (materialized) list
+# actually holds. The panel needs the number, not just the filter/rule dot: a list
+# that materialized to a handful of entries is a protection state the dot cannot
+# express, and 0 states plainly that no list is in place yet. Same definition
+# materialize_config uses to refuse publishing an empty list (list_entry_count:
+# comments and blank lines do not count), so a published list never reads 0.
+entries=$(list_entry_count "$STATE/filter-input.txt")
+
 # ---- VERIFY ----
 # (shape is fixed by construction; the app-side strict parser is the verify gate)
 
 # ---- COMMIT ----
 echo '@@STATUS-BEGIN'
-echo "schema=3"
+echo "schema=4"
 echo "ts=$ts"
 echo "hook=$hook"
 echo "hook_target=$hook_target"
@@ -78,5 +86,6 @@ echo "mode=$mode"
 echo "upstream=$upstream"
 echo "cap=$cap"
 echo "tier=$tier"
+echo "entries=$entries"
 echo '@@STATUS-END'
 exit 0

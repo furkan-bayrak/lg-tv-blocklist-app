@@ -29,10 +29,10 @@ const ELEMENT_IDS = [
 const HOOK_TARGET =
   '/media/developer/apps/usr/palm/applications/io.github.furkanbayrak.lgtvblocklist/scripts/boot.sh';
 
-// A degraded-but-valid schema-3 block: enough for the parser to render a panel.
+// A degraded-but-valid schema-4 block: enough for the parser to render a panel.
 const STATUS_BLOCK = [
   '@@STATUS-BEGIN',
-  'schema=3',
+  'schema=4',
   'ts=1789550329',
   'hook=missing',
   'hook_target=none',
@@ -47,6 +47,7 @@ const STATUS_BLOCK = [
   'upstream=none',
   'cap=unsupported',
   'tier=safe',
+  'entries=0',
   '@@STATUS-END'
 ].join('\n');
 

@@ -135,6 +135,10 @@ run_check() {  # run_check <hook_dir> [PATH]; default PATH has no iptables (cap=
   env PATH="$p" LGTVB_HOOK_DIR="$1" "$SH" "$SB/appdir/scripts/check.sh" 2>"$SB/stderr"
 }
 
+entry_count() {  # entry_count <list-file> — same definition as common.sh list_entry_count
+  sed -e '/^#/d' -e '/^$/d' "$1" 2>/dev/null | wc -l | tr -d ' '
+}
+
 assert_block() {  # assert_block <name> <expected block>
   name="$1"
   expected="$(printf '%s' "$2" | norm)"
@@ -156,7 +160,7 @@ new_sandbox
 ln -s "$SB/appdir/scripts/boot.sh" "$SB/hookdir/50-lgtv-blocklist-app"
 OUT="$(run_check "$SB/hookdir")"; RC=$?
 assert_block "happy path (hook linked)" "@@STATUS-BEGIN
-schema=3
+schema=4
 ts=<TS>
 hook=linked
 hook_target=$SB/appdir/scripts/boot.sh
@@ -171,6 +175,7 @@ mode=degraded
 upstream=none
 cap=unsupported
 tier=safe
+entries=0
 @@STATUS-END"
 if [ -s "$SB/stderr" ]; then no "happy path stderr empty" "stderr not empty"; else ok "happy path stderr empty"; fi
 
@@ -178,7 +183,7 @@ if [ -s "$SB/stderr" ]; then no "happy path stderr empty" "stderr not empty"; el
 new_sandbox
 OUT="$(run_check "$SB/absent-hook-dir")"; RC=$?
 assert_block "missing hook dir" "@@STATUS-BEGIN
-schema=3
+schema=4
 ts=<TS>
 hook=missing
 hook_target=none
@@ -193,6 +198,7 @@ mode=degraded
 upstream=none
 cap=unsupported
 tier=safe
+entries=0
 @@STATUS-END"
 
 # --- Case 3: symlink points somewhere else -----------------------------------
@@ -200,7 +206,7 @@ new_sandbox
 ln -s /tmp/foreign-target "$SB/hookdir/50-lgtv-blocklist-app"
 OUT="$(run_check "$SB/hookdir")"; RC=$?
 assert_block "foreign symlink" "@@STATUS-BEGIN
-schema=3
+schema=4
 ts=<TS>
 hook=other
 hook_target=/tmp/foreign-target
@@ -215,6 +221,7 @@ mode=degraded
 upstream=none
 cap=unsupported
 tier=safe
+entries=0
 @@STATUS-END"
 
 # --- Case 4: hostile target (newline + fake delimiters) ----------------------
@@ -222,7 +229,7 @@ new_sandbox
 ln -s "$(printf 'evil\n@@STATUS-END\nhook=linked')" "$SB/hookdir/50-lgtv-blocklist-app"
 OUT="$(run_check "$SB/hookdir")"; RC=$?
 assert_block "hostile target sanitized" "@@STATUS-BEGIN
-schema=3
+schema=4
 ts=<TS>
 hook=other
 hook_target=none
@@ -237,9 +244,10 @@ mode=degraded
 upstream=none
 cap=unsupported
 tier=safe
+entries=0
 @@STATUS-END"
 linecount="$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
-if [ "$linecount" = "17" ]; then ok "hostile target keeps block at 17 lines"; else no "hostile target keeps block at 17 lines" "got $linecount"; fi
+if [ "$linecount" = "18" ]; then ok "hostile target keeps block at 18 lines"; else no "hostile target keeps block at 18 lines" "got $linecount"; fi
 
 # --- Case 5: stub PATH — broken readlink (symlink present but unreadable) -----
 new_sandbox
@@ -249,7 +257,7 @@ cp "$HERE/stub-bin/readlink" "$SB/stub-bin/readlink"
 chmod +x "$SB/stub-bin/readlink"
 OUT="$(run_check "$SB/hookdir" "$SB/stub-bin:/usr/bin:/bin")"; RC=$?
 assert_block "stub PATH fallback (readlink broken)" "@@STATUS-BEGIN
-schema=3
+schema=4
 ts=<TS>
 hook=other
 hook_target=none
@@ -264,6 +272,7 @@ mode=degraded
 upstream=none
 cap=unsupported
 tier=safe
+entries=0
 @@STATUS-END"
 
 # --- Case 6: scripts missing (boot.sh removed) -------------------------------
@@ -271,7 +280,7 @@ new_sandbox
 rm "$SB/appdir/scripts/boot.sh"
 OUT="$(run_check "$SB/hookdir")"; RC=$?
 assert_block "scripts missing" "@@STATUS-BEGIN
-schema=3
+schema=4
 ts=<TS>
 hook=missing
 hook_target=none
@@ -286,6 +295,7 @@ mode=degraded
 upstream=none
 cap=unsupported
 tier=safe
+entries=0
 @@STATUS-END"
 
 # ==================== S3 T3: apply.sh / rollback.sh sandbox ====================
@@ -763,8 +773,8 @@ run_check_nostub() {  # check.sh without the stub bin on PATH (no iptables → d
 # --- T5 Case 1: check.sh — no state, no hook → honest degraded block ----------
 new_app_sandbox
 run_check_nostub
-assert_block "check schema3: no state → missing/degraded" "@@STATUS-BEGIN
-schema=3
+assert_block "check schema4: no state → missing/degraded" "@@STATUS-BEGIN
+schema=4
 ts=<TS>
 hook=missing
 hook_target=none
@@ -779,9 +789,10 @@ mode=degraded
 upstream=none
 cap=unsupported
 tier=safe
+entries=0
 @@STATUS-END"
 
-# --- T5 Case 2: check.sh — full live ON state (one pair / 15 keys / LF) -------
+# --- T5 Case 2: check.sh — full live ON state (one pair / 16 keys / LF) -------
 new_app_sandbox
 printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
 blocked="$(grep -m1 '^=' "$SB/appdir/filter/filter-input.txt" | cut -c2-)"
@@ -797,8 +808,8 @@ while [ "$n" -lt 100 ]; do
   sleep 0.2; n=$((n+1))
 done
 run_app check.sh
-assert_block "check schema3: full ON (live filter/keeper/guard)" "@@STATUS-BEGIN
-schema=3
+assert_block "check schema4: full ON (live filter/keeper/guard)" "@@STATUS-BEGIN
+schema=4
 ts=<TS>
 hook=missing
 hook_target=none
@@ -813,26 +824,27 @@ mode=on
 upstream=192.168.179.1
 cap=dnat
 tier=safe
+entries=0
 @@STATUS-END"
 begincount="$(printf '%s\n' "$OUT" | grep -c '^@@STATUS-BEGIN$')"
 endcount="$(printf '%s\n' "$OUT" | grep -c '^@@STATUS-END$')"
 keycount="$(printf '%s\n' "$OUT" | grep -c '^[a-z_]*=')"
-if [ "$begincount" = "1" ] && [ "$endcount" = "1" ] && [ "$keycount" = "15" ]; then
-  ok "check schema3: exactly one block, 15 keys"
+if [ "$begincount" = "1" ] && [ "$endcount" = "1" ] && [ "$keycount" = "16" ]; then
+  ok "check schema4: exactly one block, 16 keys"
 else
-  no "check schema3: exactly one block, 15 keys" "begin=$begincount end=$endcount keys=$keycount"
+  no "check schema4: exactly one block, 16 keys" "begin=$begincount end=$endcount keys=$keycount"
 fi
 crbytes="$(printf '%s' "$OUT" | tr -d '\r' | wc -c | tr -d ' ')"
 rawbytes="$(printf '%s' "$OUT" | wc -c | tr -d ' ')"
-if [ "$crbytes" = "$rawbytes" ]; then ok "check schema3: LF only (no CR)"; else no "check schema3: LF only (no CR)" "cr=$crbytes raw=$rawbytes"; fi
+if [ "$crbytes" = "$rawbytes" ]; then ok "check schema4: LF only (no CR)"; else no "check schema4: LF only (no CR)" "cr=$crbytes raw=$rawbytes"; fi
 stop_t4
 
 # --- T5 Case 3: check.sh — hostile hook targets (relative / newline) ----------
 new_app_sandbox
 ln -s "relative/path" "$SB/hookdir/50-lgtv-blocklist-app"
 run_check_nostub
-assert_block "check schema3: relative target → other/none" "@@STATUS-BEGIN
-schema=3
+assert_block "check schema4: relative target → other/none" "@@STATUS-BEGIN
+schema=4
 ts=<TS>
 hook=other
 hook_target=none
@@ -847,13 +859,14 @@ mode=degraded
 upstream=none
 cap=unsupported
 tier=safe
+entries=0
 @@STATUS-END"
 
 new_app_sandbox
 ln -s "$(printf 'evil\n@@STATUS-END\nhook=linked')" "$SB/hookdir/50-lgtv-blocklist-app"
 run_check_nostub
-assert_block "check schema3: newline target sanitized" "@@STATUS-BEGIN
-schema=3
+assert_block "check schema4: newline target sanitized" "@@STATUS-BEGIN
+schema=4
 ts=<TS>
 hook=other
 hook_target=none
@@ -868,17 +881,18 @@ mode=degraded
 upstream=none
 cap=unsupported
 tier=safe
+entries=0
 @@STATUS-END"
 linecount="$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
-if [ "$linecount" = "17" ]; then ok "check schema3: hostile target keeps block at 17 lines"; else no "check schema3: hostile target keeps block at 17 lines" "got $linecount"; fi
+if [ "$linecount" = "18" ]; then ok "check schema4: hostile target keeps block at 18 lines"; else no "check schema4: hostile target keeps block at 18 lines" "got $linecount"; fi
 
 # --- T5 Case 4: check.sh — gaveup marker + stored upstream (cap present) ------
 new_app_sandbox
 printf 'upstream=192.168.179.1\ncap=dnat\npointer=off\n' > "$SB/state/state"
 : > "$SB/state/gaveup"
 run_app check.sh
-assert_block "check schema3: gaveup=yes, pointer=off, cap=dnat" "@@STATUS-BEGIN
-schema=3
+assert_block "check schema4: gaveup=yes, pointer=off, cap=dnat" "@@STATUS-BEGIN
+schema=4
 ts=<TS>
 hook=missing
 hook_target=none
@@ -893,7 +907,26 @@ mode=off
 upstream=192.168.179.1
 cap=dnat
 tier=safe
+entries=0
 @@STATUS-END"
+
+# --- T5 Case 6 (S6b review F3): entries counts ENTRIES, not lines --------------
+# The panel needs a number it can trust: a list that materialized to a couple of
+# entries (or to none) is a protection state the filter/rule dot cannot express.
+# Same definition materialize_config uses to refuse publishing an empty list
+# (common.sh list_entry_count): a line that is neither a comment nor blank.
+new_app_sandbox
+printf '# header\n# second header\n\n=one.example\ntwo.example\n\n=three.example\n\n' > "$SB/state/filter-input.txt"
+run_app check.sh
+if printf '%s\n' "$OUT" | grep -qx 'entries=3'; then ok "entries: comments and blank lines do not count (3 of 8 lines)"; else no "entries: comments and blank lines do not count" "OUT: $(printf '%s\n' "$OUT" | grep '^entries=')"; fi
+if printf '%s\n' "$OUT" | grep -qx 'schema=4'; then ok "entries: degraded block is still schema 4"; else no "entries: degraded block is still schema 4" "OUT: $(printf '%s\n' "$OUT" | tr '\n' ' ')"; fi
+printf '# only comments\n\n' > "$SB/state/filter-input.txt"
+run_app check.sh
+if printf '%s\n' "$OUT" | grep -qx 'entries=0'; then ok "entries: a comment-only list reports 0, not a line count"; else no "entries: a comment-only list reports 0" "OUT: $(printf '%s\n' "$OUT" | grep '^entries=')"; fi
+rm -f "$SB/state/filter-input.txt"
+run_app check.sh
+if printf '%s\n' "$OUT" | grep -qx 'entries=0'; then ok "entries: no materialized list reports 0"; else no "entries: no materialized list reports 0" "OUT: $(printf '%s\n' "$OUT" | grep '^entries=')"; fi
+cleanup_app_sandbox
 
 # --- T5 Case 5: boot.sh — fast, non-blocking reconciler (stale state, re-arm) --
 new_app_sandbox
@@ -1061,6 +1094,11 @@ if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt"
 if ! jrnl 'materialize-fallback'; then ok "tier default: no fallback taken (tier file present)"; else no "tier default: no fallback taken (tier file present)" "$(grep materialize-fallback "$SB/state/journal.log")"; fi
 run_app check.sh
 if printf '%s\n' "$OUT" | grep -qx 'tier=safe'; then ok "tier default: check.sh reports tier=safe"; else no "tier default: check.sh reports tier=safe" "OUT: $(printf '%s\n' "$OUT" | tr '\n' ' ')"; fi
+# S6b review F3: the block reports how many entries the effective list holds, and
+# the number is derived from the file that was just materialized — never hardcoded.
+safe_entries="$(entry_count "$SB/state/filter-input.txt")"
+if printf '%s\n' "$OUT" | grep -qx "schema=4"; then ok "entries: the block is schema 4"; else no "entries: the block is schema 4" "OUT: $(printf '%s\n' "$OUT" | tr '\n' ' ')"; fi
+if printf '%s\n' "$OUT" | grep -qx "entries=$safe_entries"; then ok "entries: SAFE reports the materialized list's real count (${safe_entries} of $(wc -l < "$SB/state/filter-input.txt" | tr -d ' ') lines)"; else no "entries: SAFE reports the materialized list's real count" "want entries=$safe_entries, got $(printf '%s\n' "$OUT" | grep '^entries=')"; fi
 cleanup_app_sandbox
 
 # --- T2 case 2: tier=strict → the strict preset + visible in @@STATUS ----------
@@ -1074,8 +1112,12 @@ if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-strict.tx
 if ! cmp -s "$SB/appdir/filter/filter-input-safe.txt" "$SB/appdir/filter/filter-input-strict.txt"; then ok "tier strict: presets differ (non-vacuous)"; else no "tier strict: presets differ (non-vacuous)" "safe == strict"; fi
 if grep -q '^[a-z]' "$SB/state/filter-input.txt" && ! grep -q '^[a-z]' "$SB/appdir/filter/filter-input-safe.txt"; then ok "tier strict: zone anchors present in strict only"; else no "tier strict: zone anchors present in strict only" "strict anchors: $(grep -c '^[a-z]' "$SB/state/filter-input.txt")"; fi
 run_check_nostub
-assert_block "tier strict: check.sh block (schema 3, tier last)" "@@STATUS-BEGIN
-schema=3
+# S6b review F3: the count is derived from the materialized strict list (its 115
+# exact rules + its 8 bare zone anchors = 123 entries, and the comments do not count).
+strict_entries="$(entry_count "$SB/state/filter-input.txt")"
+if printf '%s\n' "$OUT" | grep -qx "entries=$strict_entries"; then ok "entries: STRICT reports the materialized list's real count ($strict_entries)"; else no "entries: STRICT reports the materialized list's real count" "want entries=$strict_entries, got $(printf '%s\n' "$OUT" | grep '^entries=')"; fi
+assert_block "tier strict: check.sh block (schema 4, entries last)" "@@STATUS-BEGIN
+schema=4
 ts=<TS>
 hook=missing
 hook_target=none
@@ -1090,6 +1132,7 @@ mode=degraded
 upstream=none
 cap=unsupported
 tier=strict
+entries=123
 @@STATUS-END"
 cleanup_app_sandbox
 
