@@ -1989,6 +1989,86 @@ probe_run materialize 192.168.5.5 >/dev/null
 if grep -qx "$ov_zone" "$SB/state/filter-input.txt" && grep -qx "=$ov_zone" "$SB/state/filter-input.txt" && [ "$(grep -c . "$SB/state/filter-input.txt")" = "$ov_base" ]; then ok "materialize: the preset is back verbatim ($ov_base entries, both lines of $ov_zone)"; else no "materialize: the preset is back verbatim" "$(grep -c . "$SB/state/filter-input.txt")/$ov_base entries"; fi
 cleanup_app_sandbox
 
+# --- T5 case 14 (review F1a/F2): reject-last is a property of EVERY preset -----
+# The refusal is not "does the ACTIVE list still have entries". The stored diff is
+# a diff against whatever tier is active, so a tier switch re-baselines it: under
+# STRICT, turning the 20 SAFE rows off leaves 95 of 115 exact rules (plus 8
+# anchors) — a diff the old active-only check accepted without a word — but
+# `tier.sh safe` would then materialize the SAFE preset minus those rows, i.e. a
+# comment-only list, and the panel would report protection while nothing was
+# blocked. save therefore asks the question of every shipped preset and refuses
+# with the one that would be emptied (journal: tier=<t>).
+tier_sandbox
+printf 'tier=strict\n' > "$SB/state/state"
+# The SAFE rows, derived from the shipped SAFE preset (never hardcoded): exactly
+# the rows a SAFE-tier install blocks, and the set that empties it when removed.
+ov_names | while IFS= read -r n; do grep -F -x -q "=$n" "$SB/appdir/filter/filter-input-safe.txt" && printf '%s\n' "$n"; done > "$SB/ov-safe-rows.txt"
+ov_safe_n=$(grep -c . "$SB/ov-safe-rows.txt" | tr -d ' ')
+if [ "$ov_safe_n" = "$(grep -c '^=' "$SB/appdir/filter/filter-input-safe.txt" | tr -d ' ')" ] && [ "$ov_safe_n" -gt 0 ]; then
+  ok "cross-tier: the SAFE rows are exactly the rows the SAFE preset blocks ($ov_safe_n)"
+else
+  no "cross-tier: the SAFE rows are exactly the rows the SAFE preset blocks" "rows=$ov_safe_n safe=$(grep -c '^=' "$SB/appdir/filter/filter-input-safe.txt")"
+fi
+ov_only="$(ov_names | grep -F -x -v -f "$SB/ov-safe-rows.txt" | sed -n '1p')"
+OV_PAYLOAD="$ov_only=off"
+ov_run save
+if [ "$RC" -eq 0 ] && [ "$(cat "$SB/state/overrides.txt" 2>/dev/null)" = "-$ov_only" ]; then ok "cross-tier: a diff that survives every preset is still saved (no over-rejection)"; else no "cross-tier: a diff that survives every preset is still saved" "rc=$RC [$(tr '\n' ' ' < "$SB/state/overrides.txt" 2>/dev/null)]"; fi
+cp "$SB/state/overrides.txt" "$SB/ov-keep.txt"
+OV_PAYLOAD="$(sed 's/$/=off/' "$SB/ov-safe-rows.txt")"
+ov_run save
+if [ "$RC" -eq 2 ]; then ok "cross-tier: emptying the SAFE preset under STRICT is refused (rc 2)"; else no "cross-tier: emptying the SAFE preset under STRICT is refused" "rc=$RC [$(printf '%s\n' "$OUT" | tr '\n' ' ')]"; fi
+if jrnl 'overrides-reject reason=reject-last tier=safe'; then ok "cross-tier: the journal names the refusal and the preset it would empty (active tier=strict, tier=safe)"; else no "cross-tier: the journal names reject-last + tier=safe" "$(tail -2 "$SB/state/journal.log" 2>/dev/null | tr '\n' ' ')"; fi
+if grep -q 'refusing to turn off the last blocked domain' "$SB/stderr" 2>/dev/null && ! grep -q '=off' "$SB/stderr" 2>/dev/null; then ok "cross-tier: the refusal explains itself on stderr (no payload echo)"; else no "cross-tier: the refusal explains itself on stderr" "[$(tr '\n' ' ' < "$SB/stderr" 2>/dev/null)]"; fi
+if cmp -s "$SB/state/overrides.txt" "$SB/ov-keep.txt"; then ok "cross-tier: the stored diff is byte-identical after the refusal"; else no "cross-tier: the stored diff is byte-identical" "[$(tr '\n' ' ' < "$SB/state/overrides.txt" 2>/dev/null)]"; fi
+ov_no_tmp "cross-tier: no scratch file left behind"
+# The counterfactual the old active-only check accepted, stated as a number: the
+# same payload leaves the ACTIVE STRICT list with rows (115 - 20 exact rules + 8
+# anchors), so only the SAFE check can be what refused it.
+ov_strict_left=$(grep -c '^=' "$SB/appdir/filter/filter-input-strict.txt" | tr -d ' ')
+if [ "$((ov_strict_left - ov_safe_n))" -gt 0 ]; then ok "cross-tier: the STRICT list would still hold $((ov_strict_left - ov_safe_n)) exact rules (active-only check would have passed it)"; else no "cross-tier: the STRICT counterfactual is non-empty" "$ov_strict_left - $ov_safe_n"; fi
+# And the same payload against the ACTIVE SAFE tier is refused the same way.
+printf 'tier=safe\n' > "$SB/state/state"
+OV_PAYLOAD="$(sed 's/$/=off/' "$SB/ov-safe-rows.txt")"
+ov_run save
+if [ "$RC" -eq 2 ] && tail -1 "$SB/state/journal.log" 2>/dev/null | grep -q 'overrides-reject reason=reject-last tier=safe'; then ok "reject-last: the ACTIVE preset emptied is refused (tier=safe, rc 2)"; else no "reject-last: the ACTIVE preset emptied is refused" "rc=$RC $(tail -1 "$SB/state/journal.log" 2>/dev/null)"; fi
+if cmp -s "$SB/state/overrides.txt" "$SB/ov-keep.txt"; then ok "reject-last: the stored diff stands after both refusals"; else no "reject-last: the stored diff stands" "[$(tr '\n' ' ' < "$SB/state/overrides.txt" 2>/dev/null)]"; fi
+cleanup_app_sandbox
+
+# --- T5 case 15 (review F1b/F2): the materialize seam cannot publish 0 entries --
+# Belt and braces behind the save check: a diff can PRE-EXIST (hand-edited file, an
+# app version that predates F1a, a preset that shrank under it), and the tier switch
+# is exactly when it bites — the new preset is smaller, the stored diff was written
+# against the old one, and the result is a comment-only list. materialize is the
+# last thing between the diff and the filter, so it refuses to publish a list with
+# no entries: fail closed, journal `materialize-fail reason=empty-list`, the live
+# filter input byte-identical (the previous list keeps protecting), no scratch file
+# left behind — and the next materialize, once the diff is gone, publishes again.
+tier_sandbox
+printf 'tier=strict\n' > "$SB/state/state"
+probe_run materialize 192.168.5.5 >/dev/null
+if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-strict.txt"; then ok "empty-list: the STRICT preset is materialized first (the list to protect with)"; else no "empty-list: the STRICT preset is materialized first" "$(sed -n '1,3p' "$SB/state/filter-input.txt" | tr '\n' ' ')"; fi
+cp "$SB/state/filter-input.txt" "$SB/ov-prev.txt"
+ov_prev_n=$(grep -c . "$SB/ov-prev.txt" | tr -d ' ')
+printf 'tier=safe\n' > "$SB/state/state"
+ov_names | while IFS= read -r n; do printf -- '-%s\n' "$n"; done > "$SB/state/overrides.txt"
+OUT="$(probe_run materialize 192.168.5.5)"
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=1" ]; then ok "empty-list: the switch + emptying diff fails closed (rc 1)"; else no "empty-list: the switch + emptying diff fails closed" "got [$OUT]"; fi
+if jrnl 'materialize-fail reason=empty-list'; then ok "empty-list: journal names the reason"; else no "empty-list: journal names the reason" "$(tail -2 "$SB/state/journal.log" 2>/dev/null | tr '\n' ' ')"; fi
+if cmp -s "$SB/state/filter-input.txt" "$SB/ov-prev.txt"; then ok "empty-list: the live filter input is byte-identical (the previous list keeps protecting)"; else no "empty-list: the live filter input is byte-identical" "now $(grep -c . "$SB/state/filter-input.txt") lines"; fi
+if [ "$(sed -e '/^#/d' -e '/^$/d' "$SB/state/filter-input.txt" | wc -l | tr -d ' ')" = "$(sed -e '/^#/d' -e '/^$/d' "$SB/ov-prev.txt" | wc -l | tr -d ' ')" ] && [ "$ov_prev_n" -gt 0 ]; then ok "empty-list: the published list still holds its entries ($ov_prev_n lines)"; else no "empty-list: the published list still holds its entries" "$(grep -c . "$SB/state/filter-input.txt")/$ov_prev_n"; fi
+if [ -z "$(find "$SB/state" -maxdepth 1 -name 'filter-input.txt.*' 2>/dev/null)" ]; then ok "empty-list: no scratch file left behind"; else no "empty-list: no scratch file left behind" "$(find "$SB/state" -maxdepth 1 -name 'filter-input.txt.*' | tr '\n' ' ')"; fi
+# The caller's side of the same refusal: apply fails open with reason=materialize
+# and the rules it may have already changed are rolled back by the existing path.
+run_app apply.sh
+assert_result "empty-list: apply fails open (reason=materialize)" fail materialize
+if jrnl 'materialize-fail reason=empty-list'; then ok "empty-list: apply's journal still names the real cause"; else no "empty-list: apply's journal still names the real cause" "$(tail -3 "$SB/state/journal.log" 2>/dev/null | tr '\n' ' ')"; fi
+if cmp -s "$SB/state/filter-input.txt" "$SB/ov-prev.txt"; then ok "empty-list: apply left the live list untouched too"; else no "empty-list: apply left the live list untouched too" "$(grep -c . "$SB/state/filter-input.txt") lines"; fi
+# Positive control: the guard is about the RESULT, not about diffs.
+rm -f "$SB/state/overrides.txt"
+OUT="$(probe_run materialize 192.168.5.5)"
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ] && cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt"; then ok "empty-list: with the diff gone the SAFE list materializes byte for byte"; else no "empty-list: with the diff gone the SAFE list materializes" "got [$OUT]"; fi
+cleanup_app_sandbox
+
 # --- Summary -----------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 
