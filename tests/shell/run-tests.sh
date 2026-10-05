@@ -297,10 +297,10 @@ BASE_PATH="$PATH"
 new_app_sandbox() {
   SB="$(mktemp -d "$SB_ROOT/sb.XXXXXX")"
   mkdir -p "$SB/appdir/scripts" "$SB/appdir/filter" "$SB/hookdir" "$SB/state" "$SB/bin"
-  cp "$SCRIPTS_SRC/common.sh" "$SCRIPTS_SRC/apply.sh" "$SCRIPTS_SRC/rollback.sh" "$SCRIPTS_SRC/keeper.sh" "$SCRIPTS_SRC/guard.sh" "$SCRIPTS_SRC/check.sh" "$SCRIPTS_SRC/boot.sh" "$SCRIPTS_SRC/dnsq.sh" "$SCRIPTS_SRC/tier.sh" "$SB/appdir/scripts/"
-  cp "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template" "$FILTER_SRC/filter-input.txt" "$SB/appdir/filter/"
+  cp "$SCRIPTS_SRC/common.sh" "$SCRIPTS_SRC/apply.sh" "$SCRIPTS_SRC/rollback.sh" "$SCRIPTS_SRC/keeper.sh" "$SCRIPTS_SRC/guard.sh" "$SCRIPTS_SRC/check.sh" "$SCRIPTS_SRC/boot.sh" "$SCRIPTS_SRC/dnsq.sh" "$SCRIPTS_SRC/tier.sh" "$SCRIPTS_SRC/overrides.sh" "$SB/appdir/scripts/"
+  cp "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template" "$FILTER_SRC/filter-input.txt" "$FILTER_SRC/domains.json" "$SB/appdir/filter/"
   cp "$STUBBIN/iptables" "$STUBBIN/luna-send" "$STUBBIN/dnsq" "$STUBBIN/node" "$STUBBIN/fake-dnscrypt-proxy" "$STUBBIN/fake-dnscrypt-proxy-dead" "$SB/bin/"
-  chmod +x "$SB/appdir/scripts/apply.sh" "$SB/appdir/scripts/rollback.sh" "$SB/appdir/scripts/keeper.sh" "$SB/appdir/scripts/guard.sh" "$SB/appdir/scripts/check.sh" "$SB/appdir/scripts/boot.sh" "$SB/appdir/scripts/dnsq.sh" "$SB/appdir/scripts/tier.sh" "$SB/bin/iptables" "$SB/bin/luna-send" "$SB/bin/dnsq" "$SB/bin/node" "$SB/bin/fake-dnscrypt-proxy" "$SB/bin/fake-dnscrypt-proxy-dead"
+  chmod +x "$SB/appdir/scripts/apply.sh" "$SB/appdir/scripts/rollback.sh" "$SB/appdir/scripts/keeper.sh" "$SB/appdir/scripts/guard.sh" "$SB/appdir/scripts/check.sh" "$SB/appdir/scripts/boot.sh" "$SB/appdir/scripts/dnsq.sh" "$SB/appdir/scripts/tier.sh" "$SB/appdir/scripts/overrides.sh" "$SB/bin/iptables" "$SB/bin/luna-send" "$SB/bin/dnsq" "$SB/bin/node" "$SB/bin/fake-dnscrypt-proxy" "$SB/bin/fake-dnscrypt-proxy-dead"
   # S4/T3: default "filter listening" fixture for the keeper's cheap probe
   # (port 5335 = 0x14D7, local 127.0.0.1, state 0A = LISTEN). Tests that need
   # "device without the port" overwrite this file after new_app_sandbox.
@@ -1676,8 +1676,323 @@ run_app check.sh
 if printf '%s\n' "$OUT" | grep -q '^mode=on$'; then ok "upstream budget new(default): check.sh mode=on"; else no "upstream budget new(default): check.sh mode=on" "OUT: $(printf '%s\n' "$OUT" | tr '\n' ' ')"; fi
 stop_t4
 
+# ==================== S6b T5: the overrides writer ============================
+# overrides.sh is the UI's only write path into the override state: the bridge
+# pipes one payload into `save` (src/bridge.ts holds the command strings, and
+# the payload has exactly that one entry path). It stores the DIFFERENCE against
+# the active tier's preset, resolved by the SAME helper materialize uses — never
+# read back from the materialized $STATE/filter-input.txt — so a change saved but
+# not yet applied still reads back as saved, an upstream list that grew an entry
+# is never fought by a stale diff, and a stale materialized file can never become
+# the baseline.
+#
+# A fresh sandbox ships only filter-input.txt, i.e. the legacy fallback, which IS
+# the strict list (all shipped domains.json rows are in it); tier_sandbox adds the
+# real per-tier presets for the cases that need the SAFE/STRICT difference.
+ov_run() {  # ov_run <args...>; stdin = $OV_PAYLOAD (empty when unset); sets OUT + RC
+  OUT="$(printf '%s' "${OV_PAYLOAD-}" | env PATH="$SB/bin:$BASE_PATH" \
+    LGTVB_STATE_DIR="$SB/state" LGTVB_HOOK_DIR="$SB/hookdir" \
+    "$SH" "$SB/appdir/scripts/overrides.sh" "$@" 2>"$SB/stderr")"
+  RC=$?
+  OV_PAYLOAD=""
+}
+ov_names() {  # the domains.json rows, in file order
+  sed -n 's/^[[:space:]]*"name": "\([a-z0-9._-]\{1,\}\)",$/\1/p' "$SB/appdir/filter/domains.json"
+}
+ov_rep() {  # ov_rep <char> <n>
+  awk -v c="$1" -v n="$2" 'BEGIN { for (i = 0; i < n; i++) printf "%s", c }'
+}
+ov_no_state() {  # nothing stored, no scratch file left behind
+  if [ ! -e "$SB/state/overrides.txt" ] && [ -z "$(find "$SB/state" -maxdepth 1 -name 'overrides.*' 2>/dev/null)" ]; then
+    ok "$1"
+  else
+    no "$1" "$SB/state now holds: $(find "$SB/state" -maxdepth 1 -type f 2>/dev/null | tr '\n' ' ')"
+  fi
+}
+ov_no_tmp() {  # no scratch file left behind
+  if [ -z "$(find "$SB/state" -maxdepth 1 -name 'overrides.*.tmp' 2>/dev/null)" ]; then
+    ok "$1"
+  else
+    no "$1" "$(find "$SB/state" -maxdepth 1 -type f 2>/dev/null | tr '\n' ' ')"
+  fi
+}
+ov_reject_case() {  # ov_reject_case <label> <payload> <reason>
+  OV_PAYLOAD=$2
+  ov_run save
+  OV_PAYLOAD=""
+  if [ "$RC" -ne 2 ]; then
+    no "save rejects $1" "rc=$RC out=[$(printf '%s\n' "$OUT" | tr '\n' ' ')]"
+    return
+  fi
+  if jrnl "overrides-reject reason=$3"; then
+    ok "save rejects $1 (reason=$3)"
+  else
+    no "save rejects $1 (reason=$3)" "$(tail -2 "$SB/state/journal.log" 2>/dev/null | tr '\n' ' ')"
+  fi
+}
+
+# --- T5 case 1: `list` with no overrides = the preset, dense, in file order ----
+new_app_sandbox
+ov_run list
+if [ "$RC" -eq 0 ]; then ok "list: rc 0 with no overrides"; else no "list: rc 0 with no overrides" "rc=$RC out=[$(printf '%s\n' "$OUT" | tr '\n' ' ')] err=[$(cat "$SB/stderr" 2>/dev/null)]"; fi
+want="$(ov_names | sed 's/$/=on/')"
+if [ "$OUT" = "$want" ]; then ok "list: one line per domains.json row, in file order, all on for the preset ($(ov_names | grep -c .))"; else no "list: one line per domains.json row, in file order" "got [$(printf '%s\n' "$OUT" | sed -n '1p;$p' | tr '\n' ' ')] want [$(printf '%s\n' "$want" | sed -n '1p;$p' | tr '\n' ' ')]"; fi
+badlines="$(printf '%s\n' "$OUT" | grep -vc '^[a-z0-9._-]\{1,128\}=\(on\|off\)$' || true)"
+if [ "$badlines" = "0" ]; then ok "list: pure data (every line name=on|off, no header or RESULT block)"; else no "list: pure data" "$badlines line(s) off-grammar"; fi
+if [ ! -e "$SB/state/overrides.txt" ]; then ok "list: writes no state"; else no "list: writes no state" "$(cat "$SB/state/overrides.txt")"; fi
+if jrnl 'overrides-fallback reason=no-tier-file tier=safe'; then ok "list: uses the shared tier resolver (legacy fallback, tagged for the overrides reader)"; else no "list: uses the shared tier resolver" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
+ov_no_tmp "list: no scratch file left behind"
+cleanup_app_sandbox
+
+# --- T5 case 2: the preset is the ACTIVE TIER's list --------------------------
+# 20 safe rows + 8 zone anchors live in the strict presets only; everything else
+# is a strict-only row. A list built from the wrong preset would show them wrong.
+tier_sandbox
+printf 'tier=safe\n' > "$SB/state/state"
+ov_run list
+if [ "$RC" -eq 0 ]; then ok "list (safe tier): rc 0"; else no "list (safe tier): rc 0" "rc=$RC"; fi
+want="$(ov_names | while IFS= read -r n; do if grep -F -x -q "=$n" "$SB/appdir/filter/filter-input-safe.txt"; then printf '%s=on\n' "$n"; else printf '%s=off\n' "$n"; fi; done)"
+if [ "$OUT" = "$want" ]; then ok "list (safe tier): every row matches the SAFE preset"; else
+  printf '%s\n' "$OUT" > "$SB/ov-actual.txt"; printf '%s\n' "$want" > "$SB/ov-want.txt"
+  no "list (safe tier): every row matches the SAFE preset" "$(diff "$SB/ov-actual.txt" "$SB/ov-want.txt" 2>&1 | head -4 | tr '\n' ' ')"
+fi
+if [ "$(printf '%s\n' "$OUT" | grep -c '=on$' || true)" = "$(grep -c '^=' "$SB/appdir/filter/filter-input-safe.txt")" ]; then ok "list (safe tier): exactly the shipped safe rows read on"; else no "list (safe tier): exactly the shipped safe rows read on" "on=$(printf '%s\n' "$OUT" | grep -c '=on$' || true) safe=$(grep -c '^=' "$SB/appdir/filter/filter-input-safe.txt")"; fi
+za_ok=1; za_bad=""
+# shellcheck disable=SC2013  # a domain list is one token per line by construction (no whitespace in a name)
+for z in $(grep '^[a-z]' "$SB/appdir/filter/filter-input-strict.txt"); do
+  printf '%s\n' "$OUT" | grep -qx "$z=off" || { za_ok=0; za_bad="$z"; break; }
+done
+if [ "$za_ok" = "1" ]; then ok "list (safe tier): the strict-only zone anchors read off (the safe preset ships no bare anchor)"; else no "list (safe tier): zone anchors read off" "$za_bad is not off"; fi
+printf 'tier=strict\n' > "$SB/state/state"
+ov_run list
+if [ "$OUT" = "$(ov_names | sed 's/$/=on/')" ]; then ok "list (strict tier): every row on, from the strict preset"; else no "list (strict tier): every row on" "$(printf '%s\n' "$OUT" | grep -c '=off$' || true) rows off"; fi
+cleanup_app_sandbox
+
+# --- T5 case 3: `save` stores the diff only, and materialize agrees ------------
+new_app_sandbox
+ov_off="$(ov_names | while IFS= read -r n; do grep -F -x -q "=$n" "$SB/appdir/filter/filter-input.txt" && { printf '%s\n' "$n"; break; }; done)"
+OV_PAYLOAD="$ov_off=off"
+ov_run save
+if [ "$RC" -eq 0 ]; then ok "save: rc 0"; else no "save: rc 0" "rc=$RC out=[$(printf '%s\n' "$OUT" | tr '\n' ' ')] err=[$(cat "$SB/stderr" 2>/dev/null)]"; fi
+if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "RESULT=overrides" ] && [ "$(printf '%s\n' "$OUT" | sed -n '2p')" = "reason=saved" ]; then ok "save: machine-readable result (RESULT=overrides reason=saved)"; else no "save: machine-readable result" "[$(printf '%s\n' "$OUT" | tr '\n' ' ')]"; fi
+if [ "$(cat "$SB/state/overrides.txt" 2>/dev/null)" = "-$ov_off" ]; then ok "save: stores one diff line for one changed row (out of $(ov_names | grep -c .))"; else no "save: stores one diff line for one changed row" "[$(cat "$SB/state/overrides.txt" 2>/dev/null)]"; fi
+if [ -n "$(find "$SB/state" -maxdepth 1 -name overrides.txt -perm 600 2>/dev/null)" ]; then ok "save: overrides.txt is root-only (0600)"; else no "save: overrides.txt is root-only (0600)" "$(find "$SB/state" -maxdepth 1 -type f 2>/dev/null | tr '\n' ' ') mode=$(find "$SB/state" -maxdepth 1 -name overrides.txt -exec ls -l {} + 2>/dev/null | cut -c1-10)"; fi
+if jrnl 'overrides-save lines=1'; then ok "save: journal records the stored diff size"; else no "save: journal records the stored diff size" "$(tail -1 "$SB/state/journal.log" 2>/dev/null)"; fi
+if [ ! -e "$SB/state/filter-input.txt" ]; then ok "save: touches no filter input (making it effective stays the apply path)"; else no "save: touches no filter input" "filter input present"; fi
+ov_run list
+if printf '%s\n' "$OUT" | grep -qx "$ov_off=off"; then ok "list: the saved row reads off before any apply"; else no "list: the saved row reads off before any apply" "$(printf '%s\n' "$OUT" | grep -x ".*$ov_off.*" || true)"; fi
+if [ "$(printf '%s\n' "$OUT" | grep -c '=on$' || true)" = "$(( $(ov_names | grep -c .) - 1 ))" ]; then ok "list: every other row is untouched"; else no "list: every other row is untouched" "on=$(printf '%s\n' "$OUT" | grep -c '=on$' || true)"; fi
+ov_no_tmp "save: no scratch file left behind"
+probe_run materialize 192.168.5.5 >/dev/null
+if grep -qx "=$ov_off" "$SB/state/filter-input.txt"; then no "materialize: the stored '-' removes the exact rule" "still present"; else ok "materialize: the stored '-' removes the exact rule"; fi
+if [ "$(grep -c . "$SB/state/filter-input.txt")" = "$(( $(grep -c . "$SB/appdir/filter/filter-input.txt") - 1 ))" ]; then ok "materialize: exactly one entry fewer than the preset"; else no "materialize: exactly one entry fewer than the preset" "$(grep -c . "$SB/state/filter-input.txt")/$(grep -c . "$SB/appdir/filter/filter-input.txt")"; fi
+# The whole chain agrees row by row: `list` (preset+overrides) == materialize.
+LIST_OUT="$OUT"; mm=""
+for n in $(ov_names); do
+  if printf '%s\n' "$LIST_OUT" | grep -qx "$n=on"; then
+    grep -F -x -q -e "=$n" -e "$n" "$SB/state/filter-input.txt" || mm="$n(list=on)"
+  else
+    grep -F -x -q -e "=$n" -e "$n" "$SB/state/filter-input.txt" && mm="$n(list=off)"
+  fi
+  [ -n "$mm" ] && break
+done
+if [ -z "$mm" ]; then ok "list and the materialized list agree on all $(ov_names | grep -c .) rows"; else no "list and the materialized list agree on all rows" "$mm"; fi
+cleanup_app_sandbox
+
+# --- T5 case 4: a diff is a diff — the preset is always the baseline ----------
+tier_sandbox
+printf 'tier=safe\n' > "$SB/state/state"
+ov_new="$(ov_names | while IFS= read -r n; do grep -F -x -q "=$n" "$SB/appdir/filter/filter-input-strict.txt" && ! grep -F -x -q "=$n" "$SB/appdir/filter/filter-input-safe.txt" && { printf '%s\n' "$n"; break; }; done)"
+OV_PAYLOAD="$ov_new=on"
+ov_run save
+if [ "$(cat "$SB/state/overrides.txt" 2>/dev/null)" = "+$ov_new" ]; then ok "save (safe tier): '+' is the diff against the SAFE preset, not the legacy list"; else no "save (safe tier): '+' is the diff against the SAFE preset" "[$(cat "$SB/state/overrides.txt" 2>/dev/null)]"; fi
+# An entry the preset gains later must win: the stored line is a difference, not a
+# copy of the state, so no `-` line can hold a new preset row off.
+ov_extra="$(ov_names | while IFS= read -r n; do [ "$n" = "$ov_new" ] && continue; ! grep -F -x -q "=$n" "$SB/appdir/filter/filter-input-safe.txt" && { printf '%s\n' "$n"; break; }; done)"
+printf '=%s\n' "$ov_extra" >> "$SB/appdir/filter/filter-input-safe.txt"
+ov_run list
+if printf '%s\n' "$OUT" | grep -qx "$ov_extra=on"; then ok "list: a row the preset gained afterwards reads on (no stale '- ' can hold it off)"; else no "list: a row the preset gained afterwards reads on" "$(printf '%s\n' "$OUT" | grep -x "$ov_extra=.*" || true)"; fi
+if printf '%s\n' "$OUT" | grep -qx "$ov_new=on"; then ok "list: the saved '+' row still reads on"; else no "list: the saved '+' row still reads on" "$(printf '%s\n' "$OUT" | grep -x "$ov_new=.*" || true)"; fi
+probe_run materialize 192.168.5.5 >/dev/null
+if grep -qx "=$ov_extra" "$SB/state/filter-input.txt" && grep -qx "=$ov_new" "$SB/state/filter-input.txt"; then ok "materialize: both the saved row and the new preset row are blocked"; else no "materialize: both the saved row and the new preset row are blocked" "$(grep -c . "$SB/state/filter-input.txt") entries"; fi
+cleanup_app_sandbox
+
+# --- T5 case 5: an empty diff is the ABSENCE of the file ----------------------
+new_app_sandbox
+ov_off="$(ov_names | while IFS= read -r n; do grep -F -x -q "=$n" "$SB/appdir/filter/filter-input.txt" && { printf '%s\n' "$n"; break; }; done)"
+OV_PAYLOAD="$ov_off=off"
+ov_run save
+if [ -f "$SB/state/overrides.txt" ]; then ok "save: a real change writes the file"; else no "save: a real change writes the file" "rc=$RC"; fi
+OV_PAYLOAD="$ov_off=on"
+ov_run save
+if [ "$RC" -eq 0 ] && [ "$(printf '%s\n' "$OUT" | sed -n '2p')" = "reason=cleared" ]; then ok "save: turning the last change back reports reason=cleared"; else no "save: turning the last change back reports reason=cleared" "rc=$RC [$(printf '%s\n' "$OUT" | tr '\n' ' ')]"; fi
+if [ ! -e "$SB/state/overrides.txt" ]; then ok "save: an empty diff removes the file (the preset is authoritative again)"; else no "save: an empty diff removes the file" "[$(cat "$SB/state/overrides.txt" 2>/dev/null)]"; fi
+if jrnl 'overrides-save lines=0 cleared=1'; then ok "save: journal records the clear"; else no "save: journal records the clear" "$(tail -2 "$SB/state/journal.log" 2>/dev/null | tr '\n' ' ')"; fi
+ov_no_state "save (no-op): a payload that changes nothing leaves no state behind"
+OV_PAYLOAD="$ov_off=on"
+ov_run save
+if [ "$RC" -eq 0 ] && [ ! -e "$SB/state/overrides.txt" ]; then ok "save: a no-op payload is rc 0 with no file created"; else no "save: a no-op payload is rc 0 with no file created" "rc=$RC"; fi
+cleanup_app_sandbox
+
+# --- T5 case 6: a rejected payload writes nothing ------------------------------
+new_app_sandbox
+# The writer re-validates every line (D13a): what it would have to guess at is
+# refused wholesale, exit 2, journaled, with the state file left byte-identical —
+# the read side (overrides_apply) stays tolerant of a hand-edited file, the write
+# side never creates one.
+ov_off="$(ov_names | while IFS= read -r n; do grep -F -x -q "=$n" "$SB/appdir/filter/filter-input.txt" && { printf '%s\n' "$n"; break; }; done)"
+OV_PAYLOAD="$ov_off=off"
+ov_run save
+saved_ok="$(cat "$SB/state/overrides.txt" 2>/dev/null)"
+if [ "$saved_ok" = "-$ov_off" ]; then ok "save: a valid payload stores state for the rejections to leave alone"; else no "save: a valid payload stores state" "[$saved_ok] rc=$RC"; fi
+# shellcheck disable=SC2016  # literal payload text, not expressions: the writer has to refuse these as characters
+for badname in 'UPPER.example' 'bad name' 'bad;name' 'bad$name' 'bad*name' 'bad\name' "bad'name" 'bad"name' 'bad(name' 'bad`name' 'bad|name' 'bad&name' 'bad#name' 'bad!name' ',name' ':name' 'name,name' '+badname' '$(id)' '`id`'; do
+  ov_reject_case "the name [$badname]" "$badname=off" bad-charset
+done
+ov_no_tmp "save (bad-charset batch): no scratch file left behind"
+if [ "$(cat "$SB/state/overrides.txt" 2>/dev/null)" = "$saved_ok" ]; then ok "save (bad-charset batch): the stored state is untouched"; else no "save (bad-charset batch): the stored state is untouched" "[$(cat "$SB/state/overrides.txt" 2>/dev/null)]"; fi
+ov_reject_case "a line without '='" 'just-a-name' bad-shape
+ov_reject_case "a state that is not on/off" 'example.com=maybe' bad-shape
+ov_reject_case "an empty name" '=off' bad-shape
+ov_reject_case "an empty state" "$ov_off=" bad-shape
+ov_reject_case "a CR-terminated line" "$(printf 'ad.lgappstv.com=off\r')" bad-shape
+ov_reject_case "a name that is not in domains.json" 'not-a-domain.example=off' unknown-domain
+ov_reject_case "an unknown domain the reader could still add" 'forced.example=off' unknown-domain
+ov_reject_case "a name longer than 128 characters" "$(ov_rep a 129)=off" name-too-long
+ov_reject_case "the same name twice" "$ov_off=on
+$ov_off=off" duplicate
+ov_reject_case "more than 512 lines" "$(awk 'BEGIN { for (i = 0; i < 600; i++) print "x" }')" oversized
+ov_reject_case "more than 16384 bytes" "$(ov_rep a 20000)" oversized
+ov_reject_case "an empty payload" '' empty-payload
+ov_reject_case "blank lines only" '
+
+' empty-payload
+if [ "$(cat "$SB/state/overrides.txt" 2>/dev/null)" = "$saved_ok" ]; then ok "save (rejections): the stored state survives every rejection"; else no "save (rejections): the stored state survives every rejection" "[$(cat "$SB/state/overrides.txt" 2>/dev/null)]"; fi
+ov_no_tmp "save (rejections): no scratch file left behind"
+cleanup_app_sandbox
+
+# --- T5 case 7: usage, and the payload has exactly one entry path ------------
+new_app_sandbox
+ov_run
+if [ "$RC" -eq 2 ] && jrnl 'overrides-reject reason=bad-usage'; then ok "usage: no argument is refused (rc 2, journaled)"; else no "usage: no argument is refused" "rc=$RC [$(printf '%s\n' "$OUT" | tr '\n' ' ')]"; fi
+ov_run save extra
+if [ "$RC" -eq 2 ] && jrnl 'overrides-reject reason=bad-usage'; then ok "usage: a second argument is refused"; else no "usage: a second argument is refused" "rc=$RC"; fi
+ov_run bogus
+if [ "$RC" -eq 2 ] && jrnl 'overrides-reject reason=bad-usage'; then ok "usage: an unknown command is refused"; else no "usage: an unknown command is refused" "rc=$RC"; fi
+ov_run "$(ov_names | sed -n '1p')=off"
+if [ "$RC" -eq 2 ]; then ok "usage: a payload-shaped argument is refused (save reads stdin only)"; else no "usage: a payload-shaped argument is refused" "rc=$RC [$(printf '%s\n' "$OUT" | tr '\n' ' ')]"; fi
+ov_no_state "usage: nothing written"
+cleanup_app_sandbox
+
+# --- T5 case 8: clear is the way back ----------------------------------------
+new_app_sandbox
+ov_run clear
+if [ "$RC" -eq 0 ] && [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "RESULT=overrides" ] && [ "$(printf '%s\n' "$OUT" | sed -n '2p')" = "reason=cleared" ]; then ok "clear: rc 0 with nothing to clear (idempotent, machine-readable)"; else no "clear: rc 0 with nothing to clear" "rc=$RC [$(printf '%s\n' "$OUT" | tr '\n' ' ')]"; fi
+ov_off="$(ov_names | sed -n '1p')"
+OV_PAYLOAD="$ov_off=off"
+ov_run save
+ov_run clear
+if [ "$RC" -eq 0 ] && [ ! -e "$SB/state/overrides.txt" ]; then ok "clear: removes the stored diff"; else no "clear: removes the stored diff" "rc=$RC [$(find "$SB/state" -maxdepth 1 -type f 2>/dev/null | tr '\n' ' ')]"; fi
+if jrnl 'overrides-clear'; then ok "clear: journaled"; else no "clear: journaled" "$(tail -2 "$SB/state/journal.log" 2>/dev/null | tr '\n' ' ')"; fi
+ov_run clear
+if [ "$RC" -eq 0 ] && [ ! -e "$SB/state/overrides.txt" ]; then ok "clear: idempotent"; else no "clear: idempotent" "rc=$RC"; fi
+ov_run list
+if printf '%s\n' "$OUT" | grep -qx "$ov_off=on"; then ok "clear: the cleared row reads on again"; else no "clear: the cleared row reads on again" "$(printf '%s\n' "$OUT" | grep -x "$ov_off=.*" || true)"; fi
+cleanup_app_sandbox
+
+# --- T5 case 9: a damaged install is refused, clear still works ----------------
+new_app_sandbox
+cp "$FILTER_SRC/filter-input-strict.txt" "$SB/appdir/filter/filter-input-strict.txt"
+ov_run list
+if [ "$RC" -eq 1 ]; then ok "list: refuses on a partial install (one tier file, rc 1)"; else no "list: refuses on a partial install" "rc=$RC [$(printf '%s\n' "$OUT" | tr '\n' ' ')]"; fi
+if jrnl 'overrides-fail reason=partial-tier-files tier=safe' && jrnl 'overrides-fail reason=no-preset'; then ok "list: journaled under the overrides tag (partial install, then the refusal)"; else no "list: journaled under the overrides tag" "$(tail -2 "$SB/state/journal.log" 2>/dev/null | tr '\n' ' ')"; fi
+OV_PAYLOAD="$(ov_names | sed -n '1p')=off"
+ov_run save
+if [ "$RC" -eq 1 ] && [ ! -e "$SB/state/overrides.txt" ]; then ok "save: refuses on a partial install, writes nothing"; else no "save: refuses on a partial install" "rc=$RC [$(find "$SB/state" -maxdepth 1 -type f 2>/dev/null | tr '\n' ' ')]"; fi
+ov_run clear
+if [ "$RC" -eq 0 ]; then ok "clear: still works on a damaged install (the way back to the preset)"; else no "clear: still works on a damaged install" "rc=$RC"; fi
+rm -f "$SB/appdir/filter/filter-input-strict.txt" "$SB/appdir/filter/domains.json"
+ov_run list
+if [ "$RC" -eq 1 ] && jrnl 'overrides-fail reason=no-domains'; then ok "list: refuses without domains.json (rc 1, journaled)"; else no "list: refuses without domains.json" "rc=$RC"; fi
+OV_PAYLOAD='anything=off'
+ov_run save
+if [ "$RC" -eq 1 ] && [ ! -e "$SB/state/overrides.txt" ]; then ok "save: refuses without domains.json, writes nothing"; else no "save: refuses without domains.json" "rc=$RC"; fi
+ov_run clear
+if [ "$RC" -eq 0 ]; then ok "clear: works with no preset and no domains.json"; else no "clear: works with no preset and no domains.json" "rc=$RC"; fi
+if [ -z "$(find "$SB/state" -maxdepth 1 -name 'overrides.*.tmp' 2>/dev/null)" ]; then ok "damaged install: no scratch file left behind"; else no "damaged install: no scratch file left behind" "$(find "$SB/state" -maxdepth 1 -type f 2>/dev/null | tr '\n' ' ')"; fi
+cleanup_app_sandbox
+
+# --- T5 case 10: one length bound, shared with the reader ----------------------
+new_app_sandbox
+ov_128="$(ov_rep a 128)"
+ov_129="$(ov_rep a 129)"
+printf '+%s\n+%s\n' "$ov_129" "$ov_128" > "$SB/state/overrides.txt"
+probe_run materialize 192.168.5.5 >/dev/null
+if grep -qx "=$ov_128" "$SB/state/filter-input.txt"; then ok "reader: a 128-char name is applied (the reader and the writer share the bound)"; else no "reader: a 128-char name is applied" "$(grep -c . "$SB/state/filter-input.txt") entries"; fi
+if grep -qx "=$ov_129" "$SB/state/filter-input.txt"; then no "reader: a 129-char name is ignored" "applied"; else ok "reader: a 129-char name is ignored"; fi
+ov_reject_case "a 129-char name" "$ov_129=off" name-too-long
+if [ "$(cat "$SB/state/overrides.txt" 2>/dev/null)" = "$(printf '+%s\n+%s' "$ov_129" "$ov_128")" ]; then ok "save: a hand-edited file is left byte-identical by a rejection"; else no "save: a hand-edited file is left byte-identical by a rejection" "[$(tr '\n' ' ' < "$SB/state/overrides.txt" 2>/dev/null)]"; fi
+ov_no_tmp "bounds: no scratch file left behind"
+cleanup_app_sandbox
+
+# --- T5 case 11: one mv installs the diff, nothing scratch survives ------------
+new_app_sandbox
+ov_off="$(ov_names | while IFS= read -r n; do grep -F -x -q "=$n" "$SB/appdir/filter/filter-input.txt" && { printf '%s\n' "$n"; break; }; done)"
+ov_off2="$(ov_names | while IFS= read -r n; do grep -F -x -q "=$n" "$SB/appdir/filter/filter-input.txt" && [ "$n" != "$ov_off" ] && { printf '%s\n' "$n"; break; }; done)"
+OV_PAYLOAD="$ov_off=off"
+ov_run save
+# The previous file gets a second name (a hard link) before the next save: if the
+# diff were rewritten in place, this name would show the new content too. It must
+# not — the stored state is installed with one rename, never edited in place.
+ln "$SB/state/overrides.txt" "$SB/state/ov-link.txt"
+OV_PAYLOAD="$ov_off2=off"
+ov_run save
+if [ "$(cat "$SB/state/ov-link.txt" 2>/dev/null)" = "-$ov_off" ] && [ "$(cat "$SB/state/overrides.txt" 2>/dev/null)" != "-$ov_off" ]; then ok "save: installs the diff by rename (the old file kept its content under its other name)"; else no "save: installs the diff by rename" "old=[$(cat "$SB/state/ov-link.txt" 2>/dev/null)] new=[$(cat "$SB/state/overrides.txt" 2>/dev/null)]"; fi
+rm -f "$SB/state/ov-link.txt"
+if [ "$(cat "$SB/state/overrides.txt" 2>/dev/null)" = "$(printf -- '-%s\n-%s\n' "$ov_off" "$ov_off2" | sort)" ]; then ok "save: two changes store two sorted diff lines"; else no "save: two changes store two sorted diff lines" "[$(tr '\n' ' ' < "$SB/state/overrides.txt" 2>/dev/null)]"; fi
+ov_no_tmp "save: no scratch file left behind after two saves"
+ov_reject_case "a bad name after two saves" 'bad name=off' bad-charset
+ov_no_tmp "save (rejected): no scratch file left behind"
+if [ -n "$(find "$SB/state" -maxdepth 1 -name overrides.txt -perm 600 2>/dev/null)" ]; then ok "save: 0600 survives the second write"; else no "save: 0600 survives the second write" "$(find "$SB/state" -maxdepth 1 -name overrides.txt -exec ls -l {} + 2>/dev/null | cut -c1-10)"; fi
+cleanup_app_sandbox
+
+# --- T5 case 12: the materialized input is never the baseline ------------------
+new_app_sandbox
+probe_run materialize 192.168.5.5 >/dev/null
+ov_off="$(ov_names | sed -n '1p')"
+printf '=stale.example.invalid\n' >> "$SB/state/filter-input.txt"
+ov_run list
+if [ "$OUT" = "$(ov_names | sed 's/$/=on/')" ]; then ok "list: ignores a stale/hand-edited state/filter-input.txt"; else no "list: ignores a stale/hand-edited filter input" "$(printf '%s\n' "$OUT" | grep -c '=off$' || true) rows off"; fi
+OV_PAYLOAD="$ov_off=off"
+ov_run save
+if grep -qx "=$ov_off" "$SB/state/filter-input.txt"; then ok "save: does not apply itself (making it effective stays the separate apply path)"; else no "save: does not apply itself" "already removed"; fi
+ov_run list
+if printf '%s\n' "$OUT" | grep -qx "$ov_off=off"; then ok "list: a saved but not yet applied change reads back as saved"; else no "list: a saved but not yet applied change reads back as saved" "$(printf '%s\n' "$OUT" | grep -x "$ov_off=.*" || true)"; fi
+ov_no_tmp "stale input: no scratch file left behind"
+cleanup_app_sandbox
+
+# --- T5 case 13: a zone row is a diff too (anchors come back) -----------------
+tier_sandbox
+printf 'tier=strict\n' > "$SB/state/state"
+ov_zone="$(grep -m1 '^[a-z]' "$SB/appdir/filter/filter-input-strict.txt")"
+ov_base="$(grep -c . "$SB/appdir/filter/filter-input-strict.txt")"
+OV_PAYLOAD="$ov_zone=off"
+ov_run save
+if [ "$(cat "$SB/state/overrides.txt" 2>/dev/null)" = "-$ov_zone" ]; then ok "save (zone row off): one diff line against the strict preset"; else no "save (zone row off): one diff line" "[$(tr '\n' ' ' < "$SB/state/overrides.txt" 2>/dev/null)]"; fi
+probe_run materialize 192.168.5.5 >/dev/null
+if ! grep -qx "$ov_zone" "$SB/state/filter-input.txt" && ! grep -qx "=$ov_zone" "$SB/state/filter-input.txt"; then ok "materialize: the zone row off removes the whole zone (exact rule and bare anchor)"; else no "materialize: the zone row off removes the whole zone" "$(grep -c "$ov_zone" "$SB/state/filter-input.txt")"; fi
+if [ "$(grep -c . "$SB/state/filter-input.txt")" = "$((ov_base - 2))" ]; then ok "materialize: one zone anchor is two preset lines"; else no "materialize: one zone anchor is two preset lines" "$(grep -c . "$SB/state/filter-input.txt")/$ov_base"; fi
+OV_PAYLOAD="$ov_zone=on"
+ov_run save
+if [ "$RC" -eq 0 ] && [ ! -e "$SB/state/overrides.txt" ]; then ok "save (zone row back on): the diff empties, so no stored line can lose the anchor"; else no "save (zone row back on): the diff empties" "rc=$RC [$(tr '\n' ' ' < "$SB/state/overrides.txt" 2>/dev/null)]"; fi
+probe_run materialize 192.168.5.5 >/dev/null
+if grep -qx "$ov_zone" "$SB/state/filter-input.txt" && grep -qx "=$ov_zone" "$SB/state/filter-input.txt" && [ "$(grep -c . "$SB/state/filter-input.txt")" = "$ov_base" ]; then ok "materialize: the preset is back verbatim ($ov_base entries, both lines of $ov_zone)"; else no "materialize: the preset is back verbatim" "$(grep -c . "$SB/state/filter-input.txt")/$ov_base entries"; fi
+cleanup_app_sandbox
+
 # --- Summary -----------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
+
+
 if [ "$fail" -ne 0 ]; then
   exit 1
 fi

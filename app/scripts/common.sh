@@ -240,17 +240,20 @@ tier_get() {
 #                              instead: materialize fails, which every caller
 #                              already handles fail-open (resolver restored), and
 #                              the journal names the reason.
+# $2 is the journal tag (default 'materialize'), so the S6b overrides writer can
+# reuse THIS resolver — one implementation of the rule above, whoever asks.
 tier_list() {
+  tl_tag=${2:-materialize}
   tl_f="$APP_DIR/filter/filter-input-$1.txt"
   if [ -f "$tl_f" ]; then
     printf '%s\n' "$tl_f"
     return 0
   fi
   if [ -f "$APP_DIR/filter/filter-input-safe.txt" ] || [ -f "$APP_DIR/filter/filter-input-strict.txt" ]; then
-    log "materialize-fail reason=partial-tier-files tier=$1"
+    log "$tl_tag-fail reason=partial-tier-files tier=$1"
     return 1
   fi
-  log "materialize-fallback reason=no-tier-file tier=$1"
+  log "$tl_tag-fallback reason=no-tier-file tier=$1"
   printf '%s\n' "$FILTER_INPUT_SRC"
 }
 
@@ -262,10 +265,17 @@ tier_list() {
 #           zone anchor 'name'
 # Applied AFTER the preset list is copied, so the preset stays the baseline.
 # An absent or empty file is a no-op. Lines that are neither form, or whose
-# name carries a character outside [a-z0-9._-], are IGNORED, never
-# interpreted: grep takes the name as a fixed string (-F -x), so no override
-# line can ever act as a pattern, and this reader tolerates a file it did not
-# write (the writer re-validates the payload before writing, D13a).
+# name carries a character outside [a-z0-9._-], or whose name is longer than
+# OVERRIDE_NAME_MAX, are IGNORED, never interpreted: grep takes the name as a
+# fixed string (-F -x), so no override line can ever act as a pattern, and this
+# reader tolerates a file it did not write (the writer re-validates the payload
+# before writing, D13a).
+# One definition of the path and of the limits, because the S6b writer
+# (app/scripts/overrides.sh) has to agree with this reader exactly: a name the
+# writer accepts and the reader drops would make the stored state and the
+# effective set disagree.
+OVERRIDES_FILE="$STATE/overrides.txt"
+OVERRIDE_NAME_MAX=128
 overrides_apply() {  # $1 list file (modified in place), $2 overrides file
   oa_ov=$2
   [ -f "$oa_ov" ] || return 0
@@ -279,6 +289,7 @@ overrides_apply() {  # $1 list file (modified in place), $2 overrides file
     case $oa_name in
       *[!a-z0-9._-]*) continue ;;
     esac
+    [ "${#oa_name}" -le "$OVERRIDE_NAME_MAX" ] || continue
     if [ "$oa_op" = add ]; then
       # Already an exact rule → nothing to do. A bare zone anchor for the same
       # name is NOT counted: the plan's override line means the exact entry, and
@@ -323,7 +334,7 @@ materialize_config() {
     return 1
   fi
   cp -f "$mt_list" "$STATE/filter-input.txt" || return 1
-  if ! overrides_apply "$STATE/filter-input.txt" "$STATE/overrides.txt"; then
+  if ! overrides_apply "$STATE/filter-input.txt" "$OVERRIDES_FILE"; then
     log "materialize-fail reason=overrides"
     return 1
   fi
