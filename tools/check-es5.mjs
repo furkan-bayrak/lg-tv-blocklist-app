@@ -444,6 +444,32 @@ function isPropertyName(text, index, length) {
   return text[j] === ':';
 }
 
+// Numeric literals the way a lexer sees them: hex/octal/binary (with separators
+// and an optional BigInt suffix), decimal with an optional fraction and
+// exponent, or a bare `.5`. The lookbehind keeps a leading `.` or identifier
+// character out of the match, so `_1_2`, `obj._1_2` and `a1_2` are identifiers
+// and never numeric tokens. Matching the TOKEN (instead of looking for `_` or
+// `n` anywhere near a digit) is what fixes both directions of hole C3/D: all
+// three BigInt bases and the exponent separator are caught, while legal ES5
+// identifiers are not.
+const NUMERIC_LITERAL =
+  /(?<![\w$.])(?:0[xX][\da-fA-F_]*|0[bB][01_]*|0[oO][0-7_]*|\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?[\d_]*)?|\.\d[\d_]*(?:[eE][+-]?[\d_]*)?)n?/g;
+
+function numericTokens(text) {
+  return [...text.matchAll(NUMERIC_LITERAL)].map((match) => match[0]);
+}
+
+// `1_000`, `0x1_0`, `1e1_0`: a separator only counts inside a numeric token.
+function hasNumericSeparator(text) {
+  return numericTokens(text).some((token) => token.includes('_'));
+}
+
+// `1n`, `0x1fn`, `0b1010n`, `0o7n`: BigInt in every base (all node-8 fatal; the
+// old /\b\d+n\b/ only saw the decimal form).
+function hasBigIntLiteral(text) {
+  return numericTokens(text).some((token) => token.endsWith('n'));
+}
+
 // A rule is a RegExp tested against the masked text, or a function taking the
 // masked text (for rules a single pattern cannot express, such as “this token
 // is a numeric literal AND it contains a separator”).
@@ -471,8 +497,8 @@ const patterns = [
   ['optional chaining', /\?\.\s*[A-Za-z_$[(]/], // `?.` + digit is ES5's `? .5`
   ['nullish coalescing', /\?\?/],
   ['logical assignment', /(?:\|\||&&)\s*=/],
-  ['numeric separator', /(?<![\w$])(?:0[xXoObB])?[\d_]*\d_\d/],
-  ['BigInt literal', /\b\d+n\b/],
+  ['numeric separator', hasNumericSeparator],
+  ['BigInt literal', hasBigIntLiteral],
   ['optional catch binding', /\bcatch\s*\{/],
 ];
 const commonJsTokens = [

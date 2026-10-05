@@ -220,7 +220,12 @@ const NODE8_FATAL = [
   ['logical assignment (`a &&= 1`)', 'var x = a &&= 1;\n', /contains logical assignment/],
   ['nullish assignment (`a ??= 1`)', 'var x = a ??= 1;\n', /contains nullish coalescing/],
   ['numeric separator (`1_000`)', 'var x = 1_000;\n', /contains numeric separator/],
+  ['numeric separator in an exponent (`1e1_0`)', 'var x = 1e1_0;\n', /contains numeric separator/],
+  ['numeric separator in hex (`0x1_0`)', 'var x = 0x1_0;\n', /contains numeric separator/],
   ['BigInt literal (`1n`)', 'var x = 1n;\n', /contains BigInt literal/],
+  ['BigInt literal in hex (`0x1fn`)', 'var x = 0x1fn;\n', /contains BigInt literal/],
+  ['BigInt literal in binary (`0b1010n`)', 'var x = 0b1010n;\n', /contains BigInt literal/],
+  ['BigInt literal in octal (`0o7n`)', 'var x = 0o7n;\n', /contains BigInt literal/],
   ['optional catch binding (`catch {`)', 'try { f(); } catch { g(); }\n', /contains optional catch binding/],
   ['class with a private field (`class{ #x = 1; … }`)', 'var C = class{ #x = 1; get y() { return this.#x; } };\n', /contains class/],
 ];
@@ -267,6 +272,37 @@ test('still passes: ES5 neighbours of the new rules (`flag ?.5 : 1`, identifiers
       'var flag = 1;\nvar n = flag ? .5 : 1;\nvar m = flag ?.5 : 1;\nvar step_1_2 = n + m;\n',
   });
   assert.equal(r.status, 0, `expected rc 0 (stdout=${r.stdout} stderr=${r.stderr})`);
+});
+
+// ---------------------------------------------------------------------------
+// Round 2, hole D: the round-1 numeric-separator lookbehind only protected a
+// `_d_d` run preceded by another word character, so these three legal ES5
+// identifiers were all rc 1. The separator test now runs on the numeric TOKEN,
+// never on the raw text, and `1_000` is still caught (see NODE8_FATAL above).
+// ---------------------------------------------------------------------------
+test('still passes: ES5 identifiers whose first character is `_` (no numeric-separator false positive)', () => {
+  for (const code of [
+    'var y = _1_2;\n',
+    'var y = obj._1_2;\n',
+    'var arr = [_1_2];\n',
+    'var y = a1_2 + _3;\n',
+    'var o = { _1_2: _1_2 };\n',
+  ]) {
+    const r = runChecker({ ...baseFiles(), 'app/js/main.js': code });
+    assert.equal(r.status, 0, `${JSON.stringify(code)} must pass (stdout=${r.stdout} stderr=${r.stderr})`);
+    assert.doesNotMatch(r.stderr, /numeric separator|BigInt literal/);
+  }
+});
+
+test('still caught: `1_000` and `1n` after the token-based rewrite', () => {
+  for (const [code, expected] of [
+    ['var x = 1_000;\n', /contains numeric separator/],
+    ['var n = 1n;\n', /contains BigInt literal/],
+  ]) {
+    const r = runChecker({ ...baseFiles(), 'app/js/main.js': code });
+    assert.equal(r.status, 1, `${JSON.stringify(code)} must fail (stdout=${r.stdout})`);
+    assert.match(r.stderr, expected, `stderr=${r.stderr}`);
+  }
 });
 
 // The other direction: division must stay division. If a `/` after a value is
