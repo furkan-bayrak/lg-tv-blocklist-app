@@ -1,0 +1,807 @@
+[
+  {
+    "name": "aic.cdpbeacon.lgtvcommon.com",
+    "tier": "strict",
+    "category": "acr",
+    "zone": "lgtvcommon.com",
+    "note": "weak — telemetry/ACR beacon (~6-min heartbeat) — aic (Americas) datacentre cluster; DNS-verified 2026-09-12; bare cdpbeacon.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "cdpbeacon.lgtvcommon.com",
+    "tier": "safe",
+    "category": "acr",
+    "zone": "lgtvcommon.com",
+    "note": "telemetry/ACR beacon (6-min heartbeat pattern observed) | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH (A/AAAA/CNAME). Service moved to the eic./aic./kic. cluster names, which are DNS-verified only and therefore filed in src/strict.txt tagged weak — the SAFE tier no longer covers this service. Kept for the audit record."
+  },
+  {
+    "name": "eic.cdpbeacon.lgtvcommon.com",
+    "tier": "strict",
+    "category": "acr",
+    "zone": "lgtvcommon.com",
+    "note": "weak — telemetry/ACR beacon (~6-min heartbeat) — eic (Europe) datacentre cluster; DNS-verified 2026-09-12; bare cdpbeacon.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "kic.cdpbeacon.lgtvcommon.com",
+    "tier": "strict",
+    "category": "acr",
+    "zone": "lgtvcommon.com",
+    "note": "weak — telemetry/ACR beacon (~6-min heartbeat) — kic (Korea) datacentre cluster; DNS-verified 2026-09-12; bare cdpbeacon.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "ad.lgappstv.com",
+    "tier": "safe",
+    "category": "ads",
+    "zone": "",
+    "note": "ad delivery on the lgappstv store CDN family (store unaffected) | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH. No cluster successor found. Kept for the audit record; harmless to block."
+  },
+  {
+    "name": "ads.lgtvcommon.com",
+    "tier": "safe",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "ad delivery (querylog family) | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH (A/AAAA/CNAME). Service moved to the eic./aic./kic. cluster names, which are DNS-verified only and therefore filed in src/strict.txt tagged weak — the SAFE tier no longer covers this service. Kept for the audit record."
+  },
+  {
+    "name": "adsdtvc.com",
+    "tier": "safe",
+    "category": "ads",
+    "zone": "",
+    "note": "ad zone | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH. No cluster successor found. Kept for the audit record; harmless to block."
+  },
+  {
+    "name": "aic.ads.lgtvcommon.com",
+    "tier": "strict",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "weak — ad delivery — aic (Americas) datacentre cluster; DNS-verified 2026-09-12; bare ads.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "aic.homeprv.lgtvcommon.com",
+    "tier": "strict",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "weak — home-screen provisioning/promos — aic (Americas) datacentre cluster; DNS-verified 2026-09-12; bare homeprv.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "aic.nudge.lgtvcommon.com",
+    "tier": "strict",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "weak — nudge/notification telemetry — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "aic.recommend.lgtvcommon.com",
+    "tier": "strict",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "weak — recommendations/promos — aic (Americas) datacentre cluster; DNS-verified 2026-09-12; bare recommend.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "de.info.lgsmartad.com",
+    "tier": "safe",
+    "category": "ads",
+    "zone": "",
+    "note": "ad info endpoint [REGION-SCOPED]"
+  },
+  {
+    "name": "eic.ads.lgtvcommon.com",
+    "tier": "strict",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "weak — ad delivery — eic (Europe) datacentre cluster; DNS-verified 2026-09-12; bare ads.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "eic.homeprv.lgtvcommon.com",
+    "tier": "strict",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "weak — home-screen provisioning/promos — eic (Europe) datacentre cluster; DNS-verified 2026-09-12; bare homeprv.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "eic.nudge.lgtvcommon.com",
+    "tier": "safe",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "nudge/notification telemetry"
+  },
+  {
+    "name": "eic.recommend.lgtvcommon.com",
+    "tier": "strict",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "weak — recommendations/promos — eic (Europe) datacentre cluster; DNS-verified 2026-09-12; bare recommend.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "homeprv.lgtvcommon.com",
+    "tier": "safe",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "home-screen provisioning/promos | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH (A/AAAA/CNAME). Service moved to the eic./aic./kic. cluster names, which are DNS-verified only and therefore filed in src/strict.txt tagged weak — the SAFE tier no longer covers this service. Kept for the audit record."
+  },
+  {
+    "name": "info.lgsmartad.com",
+    "tier": "safe",
+    "category": "ads",
+    "zone": "",
+    "note": "ad info endpoint (admanager poll ~60s); community report: Level1Techs \"LG TV Block Mini-How-to\" #255178 (wendell, 2026-09-05; observed live on G5); not observed on G1 | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH. No cluster successor found. Kept for the audit record; harmless to block."
+  },
+  {
+    "name": "kic.ads.lgtvcommon.com",
+    "tier": "strict",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "weak — ad delivery — kic (Korea) datacentre cluster; DNS-verified 2026-09-12; bare ads.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "kic.homeprv.lgtvcommon.com",
+    "tier": "strict",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "weak — home-screen provisioning/promos — kic (Korea) datacentre cluster; DNS-verified 2026-09-12; bare homeprv.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "kic.nudge.lgtvcommon.com",
+    "tier": "strict",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "weak — nudge/notification telemetry — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "kic.recommend.lgtvcommon.com",
+    "tier": "strict",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "weak — recommendations/promos — kic (Korea) datacentre cluster; DNS-verified 2026-09-12; bare recommend.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "lgsmartad.com",
+    "tier": "safe",
+    "category": "ads",
+    "zone": "",
+    "note": "dedicated ad zone apex (whole family is ads)"
+  },
+  {
+    "name": "recommend.lgtvcommon.com",
+    "tier": "safe",
+    "category": "ads",
+    "zone": "lgtvcommon.com",
+    "note": "recommendations/promos | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH (A/AAAA/CNAME). Service moved to the eic./aic./kic. cluster names, which are DNS-verified only and therefore filed in src/strict.txt tagged weak — the SAFE tier no longer covers this service. Kept for the audit record."
+  },
+  {
+    "name": "smart.adtvc.app",
+    "tier": "safe",
+    "category": "ads",
+    "zone": "",
+    "note": "ad serving (adtvc.app family) | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH. No cluster successor found. Kept for the audit record; harmless to block."
+  },
+  {
+    "name": "bss.lgechannel.com",
+    "tier": "strict",
+    "category": "channels",
+    "zone": "",
+    "note": "LG Channels (FAST) backend — feature kill by design | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH. No cluster successor found. Kept for the audit record; harmless to block."
+  },
+  {
+    "name": "lgechannel.com",
+    "tier": "strict",
+    "category": "channels",
+    "zone": "",
+    "note": "LG Channels apex — feature kill by design | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH. No cluster successor found. Kept for the audit record; harmless to block."
+  },
+  {
+    "name": "discovery.meethue.com",
+    "tier": "strict",
+    "category": "interop",
+    "zone": "",
+    "note": "interop: Philips Hue cloud bridge discovery (N-UPnP), called by LG TV background discovery; reported on webOS 25 (repo issue #12, @rugk); observed on G1 (webOS 6) 2026-06-11..2026-09-14 (pcap frame 25919: TLS SNI to 34.117.13.189:443; AGH ~4,100 lookups, ~5-min cadence); cloud discovery only, local mDNS unaffected; breakage unverified (no Hue bridge)"
+  },
+  {
+    "name": "ueiwsp.com",
+    "tier": "strict",
+    "category": "interop",
+    "zone": "",
+    "note": "weak — interop: QuickSet Cloud (UEI) discovery API; community report 2026-09-11 (repo issue #3 querylog; device unstated; not observed on G1; www subdomain observed live on G1 2026-09-12); breakage untested"
+  },
+  {
+    "name": "www.ueiwsp.com",
+    "tier": "strict",
+    "category": "interop",
+    "zone": "",
+    "note": "interop: QuickSet Cloud (UEI) discovery API; community report 2026-09-11 (repo issue #3 querylog); observed on G1 2026-09-12 (11 queries / 48 min; AGH querylog via Fritz relay); breakage untested"
+  },
+  {
+    "name": "aic-gfts.lge.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "lge.com",
+    "note": "file transfer service — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "aic-ngfts.lge.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "lge.com",
+    "note": "firmware/content file transfer — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "aic-ngfts.nextlgsdp.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "nextlgsdp.com",
+    "note": "update transfer on SDP family — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "aic-ngfts.tv.wiselg.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "wiselg.com",
+    "note": "update transfer (wiselg family) — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "eic-gfts.lge.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "lge.com",
+    "note": "file-transfer telemetry"
+  },
+  {
+    "name": "eic-ngfts.lge.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "lge.com",
+    "note": "update-check/file-transfer telemetry (boot burst)"
+  },
+  {
+    "name": "eic-ngfts.nextlgsdp.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "nextlgsdp.com",
+    "note": "update transfer on SDP family — eic (Europe) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "eic-ngfts.tv.wiselg.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "wiselg.com",
+    "note": "update transfer (wiselg family)"
+  },
+  {
+    "name": "gfts.lge.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "lge.com",
+    "note": "file transfer service"
+  },
+  {
+    "name": "kic-gfts.lge.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "lge.com",
+    "note": "file transfer service — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "kic-ngfts.lge.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "lge.com",
+    "note": "firmware/content file transfer — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "kic-ngfts.nextlgsdp.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "nextlgsdp.com",
+    "note": "update transfer on SDP family — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "kic-ngfts.tv.wiselg.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "wiselg.com",
+    "note": "update transfer (wiselg family) — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "ngfts.lge.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "lge.com",
+    "note": "firmware/content file transfer"
+  },
+  {
+    "name": "ngfts.nextlgsdp.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "nextlgsdp.com",
+    "note": "update transfer on SDP family"
+  },
+  {
+    "name": "snu.lge.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "lge.com",
+    "note": "firmware OTA check server"
+  },
+  {
+    "name": "su-dev.lge.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "lge.com",
+    "note": "OTA update server (dev channel)"
+  },
+  {
+    "name": "su-ssl.lge.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "lge.com",
+    "note": "OTA update server (SSL)"
+  },
+  {
+    "name": "su.lge.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "lge.com",
+    "note": "OTA update server"
+  },
+  {
+    "name": "aic-ocp.lgtviot.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "lgtviot.com",
+    "note": "weak — unknown (DNS only) — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "aic.cdplauncher.lgtvcommon.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "lgtvcommon.com",
+    "note": "weak — content-launcher/CDP service — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "aic.lgchhomeapp.lgtvcommon.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "lgtvcommon.com",
+    "note": "weak — home-app service — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "am.lge.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "lge.com",
+    "note": "weak — observed, function unproven"
+  },
+  {
+    "name": "eic-ocp.lgtviot.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "lgtviot.com",
+    "note": "weak — unknown (DNS only; unrelated to the local panel-compensation daemon)"
+  },
+  {
+    "name": "eic.cdplauncher.lgtvcommon.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "lgtvcommon.com",
+    "note": "weak — content-launcher/CDP service"
+  },
+  {
+    "name": "eic.lgchhomeapp.lgtvcommon.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "lgtvcommon.com",
+    "note": "weak — home-app service"
+  },
+  {
+    "name": "fms.lgunifiedsmart.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "",
+    "note": "weak — smart-family messaging service | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH. No cluster successor found. Kept for the audit record; harmless to block."
+  },
+  {
+    "name": "ig.lge.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "lge.com",
+    "note": "weak — observed, function unproven | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH. No cluster successor found. Kept for the audit record; harmless to block."
+  },
+  {
+    "name": "kic-ocp.lgtviot.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "lgtviot.com",
+    "note": "weak — unknown (DNS only) — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "kic.cdplauncher.lgtvcommon.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "lgtvcommon.com",
+    "note": "weak — content-launcher/CDP service — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "kic.lgchhomeapp.lgtvcommon.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "lgtvcommon.com",
+    "note": "weak — home-app service — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "lgtvonline.lge.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "lge.com",
+    "note": "weak — post-boot only, function unproven"
+  },
+  {
+    "name": "lgunifiedsmart.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "",
+    "note": "smart-family umbrella | ZONE RETIRED 2026-09-12: the apex itself is NXDOMAIN on Google+Cloudflare DoH, so the whole zone is gone (fms.lgunifiedsmart.com with it). Kept as an anchor in case LG revives it; costs nothing while the zone does not exist."
+  },
+  {
+    "name": "rdx2.lgtvsdp.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "",
+    "note": "weak — unknown"
+  },
+  {
+    "name": "a.lgappstv.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "",
+    "note": "weak — store-CDN-adjacent, app-update function unproven | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH. No cluster successor found. Kept for the audit record; harmless to block."
+  },
+  {
+    "name": "aic.lgeapi.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "lgeapi.com",
+    "note": "weak — region API, store/billing interplay unproven — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "aic.lggalleryplus.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "",
+    "note": "weak — Gallery+/SDX endpoint — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "aic.lgshopsvc.lgappstv.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "",
+    "note": "weak — LG Shop service (SDX) — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "aic.service.lgtvcommon.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "lgtvcommon.com",
+    "note": "weak — common-services endpoint, store interplay unproven — aic (Americas) datacentre cluster; DNS-verified 2026-09-12; bare service.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "de.ibs.nextlgsdp.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "nextlgsdp.com",
+    "note": "weak — possible in-app billing path (store risk)"
+  },
+  {
+    "name": "de.lgeapi.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "lgeapi.com",
+    "note": "weak — region API, store/billing interplay unproven"
+  },
+  {
+    "name": "eic.lgeapi.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "lgeapi.com",
+    "note": "weak — region API, store/billing interplay unproven — eic (Europe) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "eic.lggalleryplus.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "",
+    "note": "weak — Gallery+/SDX endpoint — eic (Europe) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "eic.lgshopsvc.lgappstv.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "",
+    "note": "weak — LG Shop service (SDX) — eic (Europe) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "eic.service.lgtvcommon.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "lgtvcommon.com",
+    "note": "weak — common-services endpoint, store interplay unproven — eic (Europe) datacentre cluster; DNS-verified 2026-09-12; bare service.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "kic.lgeapi.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "lgeapi.com",
+    "note": "weak — region API, store/billing interplay unproven — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "kic.lggalleryplus.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "",
+    "note": "weak — Gallery+/SDX endpoint — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "kic.service.lgtvcommon.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "lgtvcommon.com",
+    "note": "weak — common-services endpoint, store interplay unproven — kic (Korea) datacentre cluster; DNS-verified 2026-09-12; bare service.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "lgappstv.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "",
+    "note": "weak — store CDN apex (blocking apex = exact-name only in hosts/domains)"
+  },
+  {
+    "name": "lggalleryplus.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "",
+    "note": "weak — Gallery+/SDX endpoint; community report: Level1Techs \"LG TV Block Mini-How-to\" #255178 (wendell, 2026-09-05; G5 recon 2026-08-24); not observed on G1"
+  },
+  {
+    "name": "lgshopsvc.lgappstv.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "",
+    "note": "weak — LG Shop service (SDX); community report: Level1Techs \"LG TV Block Mini-How-to\" #255178 (wendell, 2026-09-05; observed live on G5); not observed on G1"
+  },
+  {
+    "name": "service.lgtvcommon.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "lgtvcommon.com",
+    "note": "weak — common-services endpoint, store interplay unproven | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH (A/AAAA/CNAME). Service moved to the eic./aic./kic. cluster names added below — those are the live ones now. Kept for the audit record."
+  },
+  {
+    "name": "aic.api.lgtviot.com",
+    "tier": "strict",
+    "category": "telemetry",
+    "zone": "lgtviot.com",
+    "note": "weak — IoT telemetry API — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "aic.lgtviot.com",
+    "tier": "strict",
+    "category": "telemetry",
+    "zone": "lgtviot.com",
+    "note": "weak — IoT telemetry (largest observed family) — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "aic.tv.wiselg.com",
+    "tier": "strict",
+    "category": "telemetry",
+    "zone": "wiselg.com",
+    "note": "weak — TV telemetry — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "aic.wiseconfig.lgtvcommon.com",
+    "tier": "strict",
+    "category": "telemetry",
+    "zone": "lgtvcommon.com",
+    "note": "weak — cloud-config telemetry — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "ca.nextlgsdp.com",
+    "tier": "safe",
+    "category": "telemetry",
+    "zone": "nextlgsdp.com",
+    "note": "SDP Canada region endpoint, telemetry — observed live on LG C1 (Canada), ~1/min after power-on + playback; querylog.json attached to PR #9"
+  },
+  {
+    "name": "de.emp.lgsmartplatform.com",
+    "tier": "safe",
+    "category": "telemetry",
+    "zone": "lgsmartplatform.com",
+    "note": "smart-platform telemetry [REGION-SCOPED]"
+  },
+  {
+    "name": "de.nextlgsdp.com",
+    "tier": "safe",
+    "category": "telemetry",
+    "zone": "nextlgsdp.com",
+    "note": "SDP region endpoint, telemetry [REGION-SCOPED]"
+  },
+  {
+    "name": "eic.api.lgtviot.com",
+    "tier": "safe",
+    "category": "telemetry",
+    "zone": "lgtviot.com",
+    "note": "IoT telemetry API"
+  },
+  {
+    "name": "eic.lgtviot.com",
+    "tier": "safe",
+    "category": "telemetry",
+    "zone": "lgtviot.com",
+    "note": "IoT telemetry (largest observed family, ~5.1k queries)"
+  },
+  {
+    "name": "eic.tv.wiselg.com",
+    "tier": "safe",
+    "category": "telemetry",
+    "zone": "wiselg.com",
+    "note": "TV telemetry (blocked live, apps fine)"
+  },
+  {
+    "name": "eic.wiseconfig.lgtvcommon.com",
+    "tier": "safe",
+    "category": "telemetry",
+    "zone": "lgtvcommon.com",
+    "note": "cloud-config telemetry (blocked live, apps fine)"
+  },
+  {
+    "name": "initscr.lge.com",
+    "tier": "safe",
+    "category": "telemetry",
+    "zone": "lge.com",
+    "note": "initial-setup telemetry (boot-time only) | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH. No cluster successor found. Kept for the audit record; harmless to block."
+  },
+  {
+    "name": "kic.api.lgtviot.com",
+    "tier": "strict",
+    "category": "telemetry",
+    "zone": "lgtviot.com",
+    "note": "weak — IoT telemetry API — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "kic.lgtviot.com",
+    "tier": "strict",
+    "category": "telemetry",
+    "zone": "lgtviot.com",
+    "note": "weak — IoT telemetry (largest observed family) — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "kic.tv.wiselg.com",
+    "tier": "strict",
+    "category": "telemetry",
+    "zone": "wiselg.com",
+    "note": "weak — TV telemetry — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "kic.wiseconfig.lgtvcommon.com",
+    "tier": "strict",
+    "category": "telemetry",
+    "zone": "lgtvcommon.com",
+    "note": "weak — cloud-config telemetry — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "lgtvsdp.com",
+    "tier": "safe",
+    "category": "telemetry",
+    "zone": "",
+    "note": "SDP telemetry apex (service delivery platform beacons)"
+  },
+  {
+    "name": "aic-op-lss.lgthinq.com",
+    "tier": "strict",
+    "category": "thinq",
+    "zone": "lgthinq.com",
+    "note": "ThinQ operations telemetry — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "aic.lgthinq.com",
+    "tier": "strict",
+    "category": "thinq",
+    "zone": "lgthinq.com",
+    "note": "weak — ThinQ cloud entry point — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "eic-op-lss.lgthinq.com",
+    "tier": "strict",
+    "category": "thinq",
+    "zone": "lgthinq.com",
+    "note": "ThinQ operations telemetry"
+  },
+  {
+    "name": "eic.lgthinq.com",
+    "tier": "strict",
+    "category": "thinq",
+    "zone": "lgthinq.com",
+    "note": "weak — ThinQ cloud entry point — eic (Europe) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "kic-op-lss.lgthinq.com",
+    "tier": "strict",
+    "category": "thinq",
+    "zone": "lgthinq.com",
+    "note": "ThinQ operations telemetry — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "kic.lgthinq.com",
+    "tier": "strict",
+    "category": "thinq",
+    "zone": "lgthinq.com",
+    "note": "weak — ThinQ cloud entry point — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "lss.lgthinq.com",
+    "tier": "strict",
+    "category": "thinq",
+    "zone": "lgthinq.com",
+    "note": "ThinQ cloud sync backend"
+  },
+  {
+    "name": "lgsmartweb.com",
+    "tier": "strict",
+    "category": "voice",
+    "zone": "",
+    "note": "weak — voice search backend; blocking breaks remote voice search; community report: Level1Techs \"LG TV Block Mini-How-to\" #255178 (wendell, 2026-09-05; G5 recon 2026-08-24); not observed on G1 | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH. No cluster successor found. Kept for the audit record; harmless to block."
+  },
+  {
+    "name": "lge.com",
+    "tier": "zone",
+    "category": "zone",
+    "zone": "lge.com",
+    "note": "umbrella zone — kills all lge.com subdomains in adblock format"
+  },
+  {
+    "name": "lgeapi.com",
+    "tier": "zone",
+    "category": "zone",
+    "zone": "lgeapi.com",
+    "note": "region API umbrella"
+  },
+  {
+    "name": "lgsmartplatform.com",
+    "tier": "zone",
+    "category": "zone",
+    "zone": "lgsmartplatform.com",
+    "note": "smart-platform telemetry umbrella — de.emp.lgsmartplatform.com observed; regional siblings otherwise uncovered"
+  },
+  {
+    "name": "lgthinq.com",
+    "tier": "zone",
+    "category": "zone",
+    "zone": "lgthinq.com",
+    "note": "ThinQ umbrella"
+  },
+  {
+    "name": "lgtvcommon.com",
+    "tier": "zone",
+    "category": "zone",
+    "zone": "lgtvcommon.com",
+    "note": "common-services telemetry umbrella — live-blocked on G1 AGH since 2026-09-09 (no breakage); hagezi umbrella 2026-09; wildcard-safe per Level1Techs \"LG TV Block Mini-How-to\" #255178 (wendell, 2026-09-05)"
+  },
+  {
+    "name": "lgtviot.com",
+    "tier": "zone",
+    "category": "zone",
+    "zone": "lgtviot.com",
+    "note": "IoT umbrella"
+  },
+  {
+    "name": "nextlgsdp.com",
+    "tier": "zone",
+    "category": "zone",
+    "zone": "nextlgsdp.com",
+    "note": "SDP umbrella"
+  },
+  {
+    "name": "wiselg.com",
+    "tier": "zone",
+    "category": "zone",
+    "zone": "wiselg.com",
+    "note": "TV/wiselg telemetry umbrella"
+  }
+]
