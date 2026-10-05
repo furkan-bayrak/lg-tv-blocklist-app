@@ -227,14 +227,23 @@ test('fixture: rows, tiers, categories, zone coverage and the never-drop fallbac
         tier: 'zone',
         category: 'zone',
         zone: 'zone-one.example',
-        note: 'nudge/notification telemetry'
+        // Upstream text with no 'umbrella' claim also gets the tier split: the
+        // clause is about what the tier blocks, not about the prose.
+        note:
+          'nudge/notification telemetry' +
+          ' (blocked as a whole zone under STRICT; under SAFE this row blocks only zone-one.example)'
       },
       {
         name: 'zone-two.example',
         tier: 'zone',
         category: 'zone',
         zone: 'zone-two.example',
-        note: 'umbrella zone — kills all zone-two.example subdomains'
+        // S6b review F4: an anchor row's upstream prose describes the STRICT
+        // preset (bare whole-subtree entry); SAFE ships no bare anchor, so the
+        // shipped copy names the tier split instead of promising the subtree.
+        note:
+          'umbrella zone — kills all zone-two.example subdomains' +
+          ' (blocked as a whole zone under STRICT; under SAFE this row blocks only zone-two.example)'
       }
     ]);
     // The unannotated name is reported (loudly, on stderr) but not dropped.
@@ -414,14 +423,17 @@ test('committed domains.json: shape, order, category table and the zone invarian
 test('committed domains.json: notes come from upstream, anchors and a covered row', () => {
   const rows = committed();
   const byName = new Map(rows.map((row) => [row.name, row]));
-  // A live zone anchor.
+  // A live zone anchor. Its note keeps the upstream prose and adds the tier
+  // truth (S6b review F4): the upstream sentence is about the STRICT preset.
   const lge = byName.get('lge.com');
   assert.deepEqual(lge, {
     name: 'lge.com',
     tier: 'zone',
     category: 'zone',
     zone: 'lge.com',
-    note: 'umbrella zone — kills all lge.com subdomains in adblock format'
+    note:
+      'umbrella zone — kills all lge.com subdomains in adblock format' +
+      ' (blocked as a whole zone under STRICT; under SAFE this row blocks only lge.com)'
   });
   // A covered SAFE row: blocked by the anchor as a whole zone, so the UI must
   // point at the anchor's row instead of letting this row be toggled directly.
@@ -430,6 +442,27 @@ test('committed domains.json: notes come from upstream, anchors and a covered ro
   assert.equal(covered.zone, 'lgtviot.com');
   assert.equal(covered.category, 'telemetry');
   assert.equal(covered.note, 'IoT telemetry (largest observed family, ~5.1k queries)');
+  // Every anchor row carries the tier split, and no other row does: the note is
+  // shipped UI copy, so a promise only ONE preset keeps must never be the whole
+  // sentence (S6b review F4).
+  const tierClause = / \(blocked as a whole zone under STRICT; under SAFE this row blocks only ([a-z0-9.-]+)\)$/;
+  const safeText = readFileSync(join(FILTER_DIR, 'filter-input-safe.txt'), 'utf8');
+  const strictText = readFileSync(join(FILTER_DIR, 'filter-input-strict.txt'), 'utf8');
+  let zoneRows = 0;
+  for (const row of rows) {
+    const m = tierClause.exec(row.note);
+    if (row.tier === 'zone') {
+      zoneRows++;
+      assert.ok(m, row.name + ': anchor note does not state the tier split');
+      assert.equal(m[1], row.name, row.name + ': the clause names ' + m[1]);
+      // The bare whole-subtree anchor really is a STRICT-only entry.
+      assert.match(strictText, new RegExp('^' + row.name.replace(/\./g, '\\.') + '$', 'm'));
+      assert.doesNotMatch(safeText, new RegExp('^' + row.name.replace(/\./g, '\\.') + '$', 'm'));
+    } else {
+      assert.equal(m, null, row.name + ': non-anchor row carries the anchor clause');
+    }
+  }
+  assert.equal(zoneRows, 8);
   // A RETIRED anchor: it is in the strict list as an exact entry, so it has a
   // row — but it covers nothing, so it stays individually toggleable (zone "").
   const retired = byName.get('lgunifiedsmart.com');

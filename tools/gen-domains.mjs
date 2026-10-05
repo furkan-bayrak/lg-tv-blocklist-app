@@ -36,7 +36,15 @@
  *             entry but covers nothing, so its row keeps zone "".
  *   note      the upstream annotation text with the leading `TAG:` marker
  *             removed (the tag is already machine-readable in `tier`), "" when
- *             upstream has no annotation for the name.
+ *             upstream has no annotation for the name. ZONE ROWS ARE THE ONE
+ *             TRANSFORMATION of that text (see anchorNote()): the upstream prose
+ *             for an anchor ("kills all X subdomains") describes the STRICT
+ *             preset, where the anchor ships as a bare whole-subtree entry. The
+ *             SAFE preset carries no bare anchor at all, so the same row ON there
+ *             adds only the exact apex rule (`=X`) — the note says which tier
+ *             delivers what instead of promising the subtree in a tier that does
+ *             not block it. Names, tiers, categories and zones are untouched by
+ *             the transformation; nothing is dropped for its prose.
  *
  * never drop a domain: a row is emitted for every name in the two lists no matter
  * what its prose says. A note that matches no category rule is filed under
@@ -216,6 +224,25 @@ function coveringZone(name, anchors) {
   return best;
 }
 
+// The one place this script does NOT ship upstream prose verbatim. Upstream's
+// anchor note ("umbrella zone — kills all lge.com subdomains") is true of the
+// STRICT preset, which ships the anchor as a bare entry, i.e. as the whole
+// subtree; it is false of SAFE, which ships no bare anchor at all, so the same row
+// ON there adds only the exact apex rule (=lge.com). The suffix states which tier
+// delivers what, so the shipped copy can never promise a subtree the active tier
+// does not block (S6b review F4: the note is UI copy and T7's blast-radius warning
+// is tier-aware for the same reason). An anchor with no upstream prose keeps ""
+// (the unannotated warning still fires; the UI falls back to its own zone
+// warning) — nothing is invented for it.
+function anchorNote(note, name) {
+  if (note === '') {
+    return '';
+  }
+  return (
+    note + ' (blocked as a whole zone under STRICT; under SAFE this row blocks only ' + name + ')'
+  );
+}
+
 // The pin: the tier list that ships next to the output carries the upstream
 // commit it was generated from in its header. domains.json is JSON and cannot
 // carry a comment, so the pin is read from there — which is exactly the
@@ -353,7 +380,7 @@ function main() {
       tier,
       category: tier === 'zone' ? 'zone' : classify(note),
       zone: coveringZone(name, anchors),
-      note
+      note: tier === 'zone' ? anchorNote(note, name) : note
     });
   }
 

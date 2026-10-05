@@ -753,55 +753,55 @@
     "tier": "zone",
     "category": "zone",
     "zone": "lge.com",
-    "note": "umbrella zone — kills all lge.com subdomains in adblock format"
+    "note": "umbrella zone — kills all lge.com subdomains in adblock format (blocked as a whole zone under STRICT; under SAFE this row blocks only lge.com)"
   },
   {
     "name": "lgeapi.com",
     "tier": "zone",
     "category": "zone",
     "zone": "lgeapi.com",
-    "note": "region API umbrella"
+    "note": "region API umbrella (blocked as a whole zone under STRICT; under SAFE this row blocks only lgeapi.com)"
   },
   {
     "name": "lgsmartplatform.com",
     "tier": "zone",
     "category": "zone",
     "zone": "lgsmartplatform.com",
-    "note": "smart-platform telemetry umbrella — de.emp.lgsmartplatform.com observed; regional siblings otherwise uncovered"
+    "note": "smart-platform telemetry umbrella — de.emp.lgsmartplatform.com observed; regional siblings otherwise uncovered (blocked as a whole zone under STRICT; under SAFE this row blocks only lgsmartplatform.com)"
   },
   {
     "name": "lgthinq.com",
     "tier": "zone",
     "category": "zone",
     "zone": "lgthinq.com",
-    "note": "ThinQ umbrella"
+    "note": "ThinQ umbrella (blocked as a whole zone under STRICT; under SAFE this row blocks only lgthinq.com)"
   },
   {
     "name": "lgtvcommon.com",
     "tier": "zone",
     "category": "zone",
     "zone": "lgtvcommon.com",
-    "note": "common-services telemetry umbrella — live-blocked on G1 AGH since 2026-09-09 (no breakage); hagezi umbrella 2026-09; wildcard-safe per Level1Techs \"LG TV Block Mini-How-to\" #255178 (wendell, 2026-09-05)"
+    "note": "common-services telemetry umbrella — live-blocked on G1 AGH since 2026-09-09 (no breakage); hagezi umbrella 2026-09; wildcard-safe per Level1Techs \"LG TV Block Mini-How-to\" #255178 (wendell, 2026-09-05) (blocked as a whole zone under STRICT; under SAFE this row blocks only lgtvcommon.com)"
   },
   {
     "name": "lgtviot.com",
     "tier": "zone",
     "category": "zone",
     "zone": "lgtviot.com",
-    "note": "IoT umbrella"
+    "note": "IoT umbrella (blocked as a whole zone under STRICT; under SAFE this row blocks only lgtviot.com)"
   },
   {
     "name": "nextlgsdp.com",
     "tier": "zone",
     "category": "zone",
     "zone": "nextlgsdp.com",
-    "note": "SDP umbrella"
+    "note": "SDP umbrella (blocked as a whole zone under STRICT; under SAFE this row blocks only nextlgsdp.com)"
   },
   {
     "name": "wiselg.com",
     "tier": "zone",
     "category": "zone",
     "zone": "wiselg.com",
-    "note": "TV/wiselg telemetry umbrella"
+    "note": "TV/wiselg telemetry umbrella (blocked as a whole zone under STRICT; under SAFE this row blocks only wiselg.com)"
   }
 ]
