@@ -313,3 +313,33 @@ test('fails when app/scripts has no .js files instead of silently skipping it', 
   assert.equal(r.status, 1);
   assert.match(r.stderr, /FAIL: no \.js files found under app\/scripts/);
 });
+
+// ---------------------------------------------------------------------------
+// Round 2, hole A: filesIn() recursed for src only, so a nested file in
+// app/scripts or app/js was never scanned. Measured before the fix: a nested
+// `app/scripts/lib/deep.js` holding `var v = a?.b;` — which the real node
+// v8.17.0 binary rejects with rc 1 — passed this gate with rc 0.
+// ---------------------------------------------------------------------------
+test('scans nested files in every tree (a subdirectory cannot hide a construct)', () => {
+  for (const [target, payload, expected] of [
+    ['app/js/lib/deep.js', 'const deep = 1;\n', /FAIL: lib\/deep\.js contains const/],
+    ['app/scripts/lib/deep.js', 'var v = a?.b;\n', /FAIL: app\/scripts\/lib\/deep\.js contains optional chaining/],
+    ['src/lib/deep.ts', 'export const deep = 1;\n', /FAIL: src\/lib\/deep\.ts uses import\/export/],
+  ]) {
+    const r = runChecker({ ...baseFiles(), [target]: payload });
+    assert.equal(r.status, 1, `${target} must be scanned (stdout=${r.stdout} stderr=${r.stderr})`);
+    assert.match(r.stderr, expected, `${target}: stderr=${r.stderr}`);
+  }
+});
+
+test('a tree holding only nested .js files counts as non-empty (no false "no .js files" FAIL)', () => {
+  const files = baseFiles();
+  delete files['app/js/main.js'];
+  const clean = runChecker({ ...files, 'app/js/lib/deep.js': 'var n = 1;\n' });
+  assert.equal(clean.status, 0, `expected rc 0 (stdout=${clean.stdout} stderr=${clean.stderr})`);
+  assert.match(clean.stdout, /OK: app\/js is conservative ES5 \(lib\/deep\.js\)/);
+  assert.doesNotMatch(clean.stderr, /no \.js files found/);
+  const dirty = runChecker({ ...files, 'app/js/lib/deep.js': 'var n = 1;\nconst deep = 2;\n' });
+  assert.equal(dirty.status, 1, `the nested file must be reported (stdout=${dirty.stdout})`);
+  assert.match(dirty.stderr, /FAIL: lib\/deep\.js contains const/);
+});

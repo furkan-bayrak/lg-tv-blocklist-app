@@ -373,6 +373,9 @@ const commonJsTokens = [
   ['require() call', /\brequire\s*\(/],
 ];
 
+// Every tree the checker walks is walked recursively: a construct hidden one
+// directory down (`app/scripts/lib/deep.js`) is still shipped and still breaks
+// the device. Sorted so the OK banner and the FAIL order are stable.
 function listFilesRecursive(root, suffix) {
   const out = [];
   const stack = [root];
@@ -387,18 +390,27 @@ function listFilesRecursive(root, suffix) {
       }
     }
   }
-  return out;
+  return out.sort();
 }
 
-// One rule for every tree the checker walks: a tree that is missing, or holds
-// none of the files it is supposed to hold, is a FAIL. A gate that passes
+// Names are relative to `root`: the recursive lister returns nested paths
+// (`lib/deep.js`), which is what the messages print and what scanTokens joins
+// back onto the tree root.
+function relativeTo(root, paths) {
+  return paths.map((path) => (path.startsWith(root + '/') ? path.slice(root.length + 1) : path));
+}
+
+// One rule for every tree the checker walks: the tree is ALWAYS walked
+// recursively — a construct one directory down (`app/scripts/lib/deep.js`) is
+// shipped and breaks the device just the same — and a tree that is missing, or
+// holds none of the files it is supposed to hold, is a FAIL. A gate that passes
 // because the code it guards went away is worse than no gate.
-function filesIn(root, suffix, missingHint, emptyReason, list = null) {
+function filesIn(root, suffix, missingHint, emptyReason) {
   if (!existsSync(root)) {
     console.error('FAIL: ' + root + ' does not exist — ' + missingHint);
     return [];
   }
-  const names = list === null ? readdirSync(root).filter((name) => name.endsWith(suffix)) : list(root, suffix);
+  const names = relativeTo(root, listFilesRecursive(root, suffix));
   if (names.length === 0) {
     console.error('FAIL: no ' + suffix + ' files found under ' + root + ' — ' + emptyReason);
   }
@@ -460,16 +472,16 @@ const srcFiles = filesIn(
   srcDir,
   '.ts',
   'the plain-script guard would silently skip.',
-  'cannot check the plain-script guard.',
-  listFilesRecursive
+  'cannot check the plain-script guard.'
 );
 if (srcFiles.length === 0) failed = true;
 for (const file of srcFiles) {
-  if (reportMaskErrors(file, file)) failed = true;
-  const { text } = masked(file);
+  const path = join(srcDir, file);
+  if (reportMaskErrors(path, path)) failed = true;
+  const { text } = masked(path);
   if (/^\s*(?:import|export)\b/m.test(text)) {
     console.error(
-      'FAIL: ' + file + ' uses import/export — src must stay plain-script (IIFE globals), not CommonJS modules.'
+      'FAIL: ' + path + ' uses import/export — src must stay plain-script (IIFE globals), not CommonJS modules.'
     );
     failed = true;
   }
