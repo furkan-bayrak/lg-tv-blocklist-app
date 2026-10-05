@@ -18,6 +18,29 @@
  * and it is a compile-time literal, so no user-supplied string ever reaches a
  * command line.
  *
+ * Domain toggles (S6b T6): three more wrappers (saveOverrides/clearOverrides/
+ * listOverrides) for app/scripts/overrides.sh. clear/list are fixed constants
+ * like every other command here. save is the ONE command in this file whose
+ * bytes come from outside, and it is built as a literal head + payload +
+ * literal tail:
+ *
+ *     printf '%s' '<payload>' | sh <APP_DIR>/scripts/overrides.sh save
+ *
+ * The payload is not a string a caller may pass in: saveOverrides() takes the
+ * UI's changes and runs them through LgOverrides.serialize() (src/overrides.ts),
+ * whose output is the ONLY thing this file will quote into a command. It is
+ * then re-checked with LgOverrides.isSafePayload() and refused if it is not
+ * exactly `[a-z0-9._-]=on|off` lines, so the accepted alphabet contains no
+ * quote, backslash, space, `$`, backtick, glob, `;`, `|`, `&`, `<`, `>` or CR
+ * that could escape the quotes and change the command. A refusal answers with
+ * returnValue=false and is never sent. overrides.sh re-validates every line
+ * anyway — it is the boundary, this file is only the choke point.
+ *
+ * Why a pipe and single quotes at all: the HBC service has no argv or stdin
+ * parameter (its exec payload is `{ command: string }`), and it runs that
+ * string through child_process.exec, i.e. a shell — which is also what the
+ * existing `&&`-chained register command already relies on.
+ *
  * Platform ceilings (measured on the G1 during S0, see the S0 spike report):
  *  - /exec stdout cap is 204800 bytes; at the cap the child is killed and
  *    returnValue comes back false even though the transport exits 0. Always
@@ -85,6 +108,13 @@ interface LgBlocklistBridgeApi {
   runRollback(onDone: (response: HbExecResponse) => void): void;
   setTierSafe(onDone: (response: HbExecResponse) => void): void;
   setTierStrict(onDone: (response: HbExecResponse) => void): void;
+  saveOverrides(
+    entries: OverrideChange[],
+    knownNames: string[],
+    onDone: (response: HbExecResponse) => void
+  ): void;
+  clearOverrides(onDone: (response: HbExecResponse) => void): void;
+  listOverrides(onDone: (response: HbExecResponse) => void): void;
 }
 
 var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi {
@@ -117,6 +147,14 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
   // refuses anything that is not exactly safe|strict (writing nothing).
   var CMD_TIER_SAFE = 'sh ' + APP_DIR + '/scripts/tier.sh safe';
   var CMD_TIER_STRICT = 'sh ' + APP_DIR + '/scripts/tier.sh strict';
+  // S6b T6: the domain toggles. `save` is split into a head and a tail so the
+  // payload (and only the payload) can sit between two constants; every byte
+  // that reaches overrides.sh comes from LgOverrides.serialize(), whose output
+  // the gate below re-checks. `clear` and `list` are ordinary constants.
+  var CMD_OVERRIDES_SAVE_HEAD = "printf '%s' '";
+  var CMD_OVERRIDES_SAVE_TAIL = "' | sh " + APP_DIR + '/scripts/overrides.sh save';
+  var CMD_OVERRIDES_CLEAR = 'sh ' + APP_DIR + '/scripts/overrides.sh clear';
+  var CMD_OVERRIDES_LIST = 'sh ' + APP_DIR + '/scripts/overrides.sh list';
 
   function getRequestTarget(): WebOSRequestTarget | null {
     if (typeof webOS === 'undefined' || !webOS) {
@@ -236,6 +274,48 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
     exec(CMD_TIER_STRICT, onDone);
   }
 
+  /**
+   * Write the changed domain rows. The changes are validated here and only their
+   * serialized form is quoted into the command; an invalid or unsafe payload is
+   * refused (returnValue=false, nothing sent). `knownNames` is the app's domain
+   * list (app/filter/domains.json) — required, because a name that is not in it
+   * is exactly what the writer refuses.
+   */
+  function saveOverrides(
+    entries: OverrideChange[],
+    knownNames: string[],
+    onDone: (response: HbExecResponse) => void
+  ): void {
+    if (typeof LgOverrides === 'undefined' || !LgOverrides) {
+      onDone({
+        returnValue: false,
+        errorText: 'The domain changes were not sent: the js/overrides.js module is not loaded, ' +
+          'so nothing could be validated. The installed package looks incomplete - reinstall it.'
+      });
+      return;
+    }
+    var result = LgOverrides.serialize(entries, knownNames);
+    if (!result.ok || !LgOverrides.isSafePayload(result.payload)) {
+      onDone({
+        returnValue: false,
+        errorText: 'The domain changes were not sent: ' +
+          (result.detail === '' ? 'the payload did not pass the local safety check.' : result.detail + '.')
+      });
+      return;
+    }
+    exec(CMD_OVERRIDES_SAVE_HEAD + result.payload + CMD_OVERRIDES_SAVE_TAIL, onDone);
+  }
+
+  /** Reset every domain to the active tier's preset. Idempotent, no payload. */
+  function clearOverrides(onDone: (response: HbExecResponse) => void): void {
+    exec(CMD_OVERRIDES_CLEAR, onDone);
+  }
+
+  /** The effective set (one `name=on|off` line per domain row); the UI parses it. */
+  function listOverrides(onDone: (response: HbExecResponse) => void): void {
+    exec(CMD_OVERRIDES_LIST, onDone);
+  }
+
   return {
     available: available,
     diagnose: diagnose,
@@ -248,6 +328,9 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
     runApply: runApply,
     runRollback: runRollback,
     setTierSafe: setTierSafe,
-    setTierStrict: setTierStrict
+    setTierStrict: setTierStrict,
+    saveOverrides: saveOverrides,
+    clearOverrides: clearOverrides,
+    listOverrides: listOverrides
   };
 })();

@@ -38,6 +38,9 @@
   <pre id="output">Nothing done yet.</pre>
   <!-- LG webOSTV.js: the platform does not inject webOS.*; it must load first (see THIRD-PARTY-NOTICES.md) -->
   <script src="vendor/webOSTV.js" charset="utf-8"></script>
+  <!-- js/overrides.js validates the domain-toggle payload before js/bridge.js can
+       quote it into a command line, so it loads first (S6b T6). -->
+  <script src="js/overrides.js"></script>
   <script src="js/bridge.js"></script>
   <script src="js/status.js"></script>
   <script src="js/main.js"></script>
