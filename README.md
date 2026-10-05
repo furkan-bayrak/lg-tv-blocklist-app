@@ -20,9 +20,19 @@ a real TV (LG G1, webOS 6 — see `docs/test-evidence/`).
   `/var/lib/webosbrew/init.d/` (never copied — webosbrew store rule)
 - `app/scripts/` blocking layer — `apply.sh`/`rollback.sh` (apply + rollback),
   `keeper.sh` + `guard.sh` (supervisor pair), plus the bundled filtering engine
-- `tools/check-es5.mjs` — build check: the compiled bundle stays conservative ES5
+- `tools/check-es5.mjs` — build check: the compiled bundle stays conservative ES5.
+  A pattern scan over a masked copy of `app/js`, `app/scripts` (both walked
+  recursively) plus the `src/` plain-script guard — not an ES5 parser; the header
+  lists what it does and does not enforce
+- `tools/check-node8.mjs` — `npm run check:node8`: runs the real node v8.17.0 parser
+  (`--check`) over every shipped `.js` file, the closest proxy for the TV's node
+  v8.12.0. Ground truth for syntax, so it catches what the pattern list cannot.
+  It fetches node@8.17.0 from the registry, so it is a CI step rather than part of
+  `npm test`; offline, `CHECK_NODE8_ALLOW_SKIP=1` reports UNVERIFIED instead of
+  failing (the default is to fail, never to pass silently)
 - `.github/workflows/build.yml` — CI: build, package, Homebrew manifest
-  (`rootRequired: true` in the manifest), `webosbrew-ipk-verify` compatibility report
+  (`rootRequired: true` in the manifest), ES5 pattern guard + node 8 parse gate,
+  `webosbrew-ipk-verify` compatibility report
 
 ## Build
 

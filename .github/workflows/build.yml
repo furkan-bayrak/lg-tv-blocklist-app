@@ -36,6 +36,15 @@ jobs:
       - name: Build (TypeScript -> ES5) and run the ES5 guard
         run: npm run build && npm run check:es5
 
+      # The ES5 guard is a pattern scan over masked text; this runs the parser
+      # the TV itself uses (node v8.12.0, so node@8.17.0 is the closest proxy).
+      # Kept next to the other syntax check so a device-breaking construct fails
+      # the build before the slow packaging steps. Needs the npm registry for
+      # node@8.17.0; if that fetch fails the step fails on purpose rather than
+      # reporting a gate that never ran.
+      - name: Node 8 parse gate (the parser the TV runs)
+        run: npm run check:node8
+
       - name: Shellcheck (POSIX mode) on shell glue
         run: shellcheck -s sh -S warning app/scripts/*.sh tests/shell/*.sh tests/shell/stub-bin/* tests/g1/*.sh
 

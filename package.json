@@ -14,6 +14,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check:es5": "node tools/check-es5.mjs",
+    "check:node8": "node tools/check-node8.mjs",
     "test:ts": "node --test \"tests/ts/*.test.mjs\"",
     "test:shell": "sh tests/shell/run-tests.sh",
     "test": "npm run build && npm run check:es5 && npm run test:ts && npm run test:shell",
