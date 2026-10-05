@@ -3,22 +3,34 @@
 // Why they exist: the scan that guards app/scripts/*.js — the code dnsq.sh
 // execs on the TV's node v8.12.0 — is a build gate nobody can run by hand on
 // the target. If the gate silently stops scanning (wrong dir, empty tree,
-// over-eager comment scrubbing), a post-ES5 construct ships and the failure
-// only shows up on the TV. Each test asserts the exact exit code and message.
+// over-eager masking of strings/comments/regex literals), a post-ES5 construct
+// ships and the failure only shows up on the TV. Each test asserts the exact
+// exit code and message.
+//
+// Soundness of the masker is pinned here too: the checker blanks non-code spans
+// before matching, so a regex literal holding `/` used to swallow real code and
+// every case in the "blinding" group below passed with rc 0 at e4bb2e9.
 //
 // Every fixture tree is built in os.tmpdir() and the REAL checker is run with
 // cwd set to that tree: the checker resolves app/js, app/scripts and src
-// relative to cwd, so nothing inside the repository is written or moved.
-import { test } from 'node:test';
+// relative to cwd, so nothing inside the repository is written or moved. The
+// trees are removed again in the after() hook below — before it, every run left
+// eight unique /tmp/check-es5-* trees behind.
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const CHECKER = fileURLToPath(new URL('../../tools/check-es5.mjs', import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const ROOT = mkdtempSync(join(tmpdir(), 'check-es5-'));
+
+after(() => {
+  rmSync(ROOT, { recursive: true, force: true });
+});
 
 // Baseline tree: an ES5 IIFE in app/js, a node CLI in app/scripts, a
 // plain-script .ts under src/. require()/module.exports are deliberate — they
@@ -32,9 +44,12 @@ function baseFiles() {
 }
 
 let seq = 0;
-function runChecker(files) {
+function runChecker(files, emptyDirs = []) {
   seq += 1;
   const tree = join(ROOT, 'tree' + seq);
+  for (const rel of emptyDirs) {
+    mkdirSync(join(tree, rel), { recursive: true });
+  }
   for (const rel of Object.keys(files)) {
     mkdirSync(join(tree, dirname(rel)), { recursive: true });
     writeFileSync(join(tree, rel), files[rel]);
@@ -42,6 +57,20 @@ function runChecker(files) {
   const r = spawnSync(process.execPath, [CHECKER], { cwd: tree, encoding: 'utf8' });
   assert.equal(r.error, undefined, `checker failed to start: ${r.error}`);
   return r;
+}
+
+// The post-ES5 construct must be found in BOTH trees the checker walks: app/js
+// is the webview's code, app/scripts is the code node v8.12.0 executes.
+function assertFailsInBothTrees(name, code, expected) {
+  for (const target of ['app/js/main.js', 'app/scripts/dnsq.js']) {
+    const r = runChecker({ ...baseFiles(), [target]: code });
+    assert.equal(
+      r.status,
+      1,
+      `${name}: ${target} expected rc 1, got ${r.status} (stdout=${r.stdout} stderr=${r.stderr})`
+    );
+    assert.match(r.stderr, expected, `${name}: ${target} expected ${expected}, stderr=${r.stderr}`);
+  }
 }
 
 test('passes on an ES5-only tree and reports both scanned trees', () => {
@@ -91,7 +120,7 @@ test('fails on top-level import/export under src (plain-script guard unchanged)'
 test('does not false-positive on prose: comments may mention class/let/const/.../=>', () => {
   const r = runChecker({
     ...baseFiles(),
-    // dnsq.js:33's real comment is the reason comments are scrubbed.
+    // dnsq.js:33's real comment is the reason comments are masked.
     'app/scripts/dnsq.js':
       'var x = 1; // type + class + ttl + rdlen must be present\n' +
       '/* let and const and ... and => and ` all live in a comment */\n',
@@ -99,10 +128,125 @@ test('does not false-positive on prose: comments may mention class/let/const/...
   assert.equal(r.status, 0, `comments must not fail the check (stderr=${r.stderr})`);
 });
 
+// ---------------------------------------------------------------------------
+// The masker must not be blindable.
+//
+// A regex literal that contains `/` (or a character class holding `/*`) used to
+// be read as the start of a comment: the rest of the line/file was blanked, so
+// the post-ES5 construct after it was never matched. All of the payloads below
+// passed with rc 0 at e4bb2e9 (old checker 36f6d64 failed them by accident, on
+// the raw text); each must FAIL now, in both trees.
+// ---------------------------------------------------------------------------
+test('blinding case 1: a regex literal with an escaped slash must not hide const', () => {
+  assertFailsInBothTrees('case 1', 'var re = /\\//; const x = 1;\n', /contains const/);
+});
+
+test('blinding case 2: replace(/\\//g, ...) must not hide let', () => {
+  assertFailsInBothTrees('case 2', "p.replace(/\\//g,'-'); let n = 1;\n", /contains let/);
+});
+
+test('blinding case 3: if (/\\//.test(p)) must not hide let', () => {
+  assertFailsInBothTrees('case 3', 'if (/\\//.test(p)) { let q = 1; }\n', /contains let/);
+});
+
+test('blinding case 4: a regex literal must not hide an arrow function', () => {
+  assertFailsInBothTrees('case 4', 'var re = /\\//; var f = () => 1;\n', /contains arrow function/);
+});
+
+test('blinding case 5: a regex literal must not hide a template literal', () => {
+  assertFailsInBothTrees('case 5', 'var re = /\\//; var s = `x`;\n', /contains template literal/);
+});
+
+test('blinding case 7: /[//]/ must not hide const (a slash in a class does not end the literal)', () => {
+  assertFailsInBothTrees('case 7', 'var re = /[//]/; const x = 1;\n', /contains const/);
+});
+
+test('blinding case 8: /[/*]/ … const … */ must not hide const (nor pass on the trailing */)', () => {
+  assertFailsInBothTrees('case 8', 'var re = /[/*]/;\nconst x = 1;\n*/\n', /contains const/);
+});
+
+// The other direction: division must stay division. If a `/` after a value is
+// mistaken for a regex literal, the "body" it swallows can hide real code — the
+// same silent pass from the other side.
+test('division after a number, `)`, `]` or an object-literal `}` cannot hide const', () => {
+  for (const code of [
+    'var n = 10 / 2; const x = 1;\n',
+    'var n = f() / 2; const x = 1;\n',
+    'var n = arr[0] / 2; const x = 1;\n',
+    'var n = { a: 1 } / 2; const x = 1;\n',
+  ]) {
+    const r = runChecker({ ...baseFiles(), 'app/js/main.js': code });
+    assert.equal(r.status, 1, `expected rc 1 for ${JSON.stringify(code)} (stderr=${r.stderr})`);
+    assert.match(r.stderr, /contains const/, `expected const to be reported (stderr=${r.stderr})`);
+  }
+});
+
+// Fail closed: a file the masker cannot read reliably must FAIL, never pass.
+// Every one of these was a silent rc 0 at e4bb2e9 (or a pass for the wrong
+// reason), because the span never terminated where the old scrub expected.
+test('fail-closed: an unterminated single-quoted string fails instead of reporting OK', () => {
+  const r = runChecker({ ...baseFiles(), 'app/js/main.js': "var s = 'abc\n" });
+  assert.equal(r.status, 1, `expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+  assert.match(r.stderr, /unterminated single-quoted string/);
+});
+
+test('fail-closed: an unterminated double-quoted string fails instead of reporting OK', () => {
+  const r = runChecker({ ...baseFiles(), 'app/js/main.js': 'var s = "abc\n' });
+  assert.equal(r.status, 1, `expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+  assert.match(r.stderr, /unterminated double-quoted string/);
+});
+
+test('fail-closed: an unterminated template literal fails instead of reporting OK', () => {
+  const r = runChecker({ ...baseFiles(), 'app/js/main.js': 'var s = `abc\n' });
+  assert.equal(r.status, 1, `expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+  assert.match(r.stderr, /unterminated template literal/);
+});
+
+test('fail-closed: an unterminated block comment fails instead of reporting OK', () => {
+  const r = runChecker({ ...baseFiles(), 'app/js/main.js': '/* let and const\n' });
+  assert.equal(r.status, 1, `expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+  assert.match(r.stderr, /unterminated block comment/);
+});
+
+test('fail-closed: an unterminated regex literal fails instead of reporting OK', () => {
+  const r = runChecker({ ...baseFiles(), 'app/js/main.js': 'var re = /abc\n' });
+  assert.equal(r.status, 1, `expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+  assert.match(r.stderr, /unterminated regular expression/);
+});
+
+test('fail-closed: a `/` the masker cannot classify fails instead of reporting OK', () => {
+  const r = runChecker({ ...baseFiles(), 'app/js/main.js': 'var a = 1 @ / 2;\n' });
+  assert.equal(r.status, 1, `expected rc 1, got ${r.status} (stdout=${r.stdout})`);
+  assert.match(r.stderr, /cannot classify/);
+});
+
+test('still passes: strings with `//`/`/*` and a regex holding a quote and a slash in a class', () => {
+  const r = runChecker({
+    ...baseFiles(),
+    'app/js/main.js':
+      "var u = 'http://example.com/x';\n" +
+      "var c = '/* not a comment */';\n" +
+      'var m = /[\'"]\\//.test(u);\n' +
+      'var n = 1;\n',
+  });
+  assert.equal(r.status, 0, `expected rc 0 (stdout=${r.stdout} stderr=${r.stderr})`);
+});
+
+test(
+  'still passes: the real repository tree (app/js, app/scripts, src)',
+  { skip: !existsSync(join(REPO_ROOT, 'app/js')) && 'app/js is a build artifact — run `npm run build` first' },
+  () => {
+    const r = spawnSync(process.execPath, [CHECKER], { cwd: REPO_ROOT, encoding: 'utf8' });
+    assert.equal(r.error, undefined, `checker failed to start: ${r.error}`);
+    assert.equal(r.status, 0, `the real tree must stay green (stdout=${r.stdout} stderr=${r.stderr})`);
+    assert.doesNotMatch(r.stderr, /FAIL/);
+  }
+);
+
 test('fails when app/scripts has no .js files instead of silently skipping it', () => {
   const files = baseFiles();
   delete files['app/scripts/dnsq.js'];
-  const r = runChecker(files);
+  const r = runChecker(files, ['app/scripts']);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /FAIL: no \.js files found under app\/scripts/);
 });

@@ -13,12 +13,24 @@
  * never the CommonJS ban — require() is those CLIs' contract. Its compatibility
  * used to rest on a manual `npx node@8.17.0` run; this scan is the automated gate.
  *
- * Patterns are matched against a copy of the source with quoted string
- * contents and comments removed, so UI copy like 'Loading...' or a comment that
- * mentions "type + class" cannot false-positive the spread/rest or class check.
- * Neither scrub can hide a real construct: quoted contents and comments are not
- * syntax the engine ever reads. Backticks survive that scrubbing, so template
- * literals are still detected.
+ * Patterns are matched against a masked copy of the source: ONE left-to-right
+ * lexer pass blanks the contents of every non-code span — single- and
+ * double-quoted strings, template literals, line and block comments, and REGEX
+ * LITERALS. A comment-only scrub cannot be sound: it cannot tell
+ * `p.replace(/\//g, '-')` from `a // comment`, so the `/` inside the regex opens
+ * a comment that swallows the rest of the line — real code included. The masker
+ * therefore classifies every span as it walks. Regex vs division is decided by
+ * the previous significant token: after an operator, `(`, `,`, `=`, `:`, `[`,
+ * `!`, `&`, `|`, `?`, `{`, `}`, `;` or a value-position keyword (`return`,
+ * `typeof`, `case`, …) a `/` opens a regex literal, while after an identifier,
+ * number, `)`, `]` or an expression-position `}` it is division. Escapes are
+ * honoured and a `/` inside a character class does not end the literal.
+ *
+ * The masker FAILS CLOSED: an unterminated string, template literal, comment or
+ * regex, or a `/` it cannot classify, fails the file with a clear message (the
+ * gate must never print OK for a file it could not read). Anything it does not
+ * understand is left visible, which can only cause a false FAIL, never a silent
+ * pass. Backticks stay visible, so template literals are still detected.
  *
  * Plain-script guard (S3/T7): index.html loads js/bridge.js, js/status.js and
  * js/main.js as plain <script> tags — there is no module loader — so every
@@ -31,21 +43,299 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-function stripStringLiterals(source) {
-  return source
-    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
-    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""');
+// Keywords after which a `/` opens a regex literal (they expect an expression).
+const VALUE_KEYWORDS = new Set([
+  'case',
+  'delete',
+  'do',
+  'else',
+  'in',
+  'instanceof',
+  'new',
+  'of',
+  'return',
+  'typeof',
+  'void',
+  'yield',
+]);
+
+// Every operator and delimiter the classifier needs to name a token, longest
+// first so `>>>=` is not read as three `>` tokens.
+const PUNCTUATORS = [
+  '>>>=', '...', '===', '!==', '**=', '<<=', '>>=', '>>>', '&&=', '||=', '??=',
+  '=>', '==', '!=', '<=', '>=', '&&', '||', '??', '?.', '++', '--', '+=', '-=',
+  '*=', '/=', '%=', '&=', '|=', '^=', '<<', '>>', '**',
+  '{', '}', '(', ')', '[', ']', ';', ',', '<', '>', '+', '-', '*', '/', '%',
+  '&', '|', '^', '!', '~', '?', ':', '=', '.',
+];
+
+function isLineTerminator(ch) {
+  return ch === '\n' || ch === '\r' || ch === '\u2028' || ch === '\u2029';
 }
 
-// Comments are scrubbed as well: they never run, and prose like dnsq.js's
-// "type + class + ttl" would otherwise false-positive the class rule. Strings
-// go first, so a quoted URL ('luna://…') cannot open a comment.
-function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, '');
+function isSpace(ch) {
+  return ch === ' ' || ch === '\t' || ch === '\v' || ch === '\f' || ch === '\u00a0' || ch === '\ufeff';
 }
 
-function scrub(source) {
-  return stripComments(stripStringLiterals(source));
+function isIdentStart(ch) {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch === '_' || ch === '$';
+}
+
+function isIdentPart(ch) {
+  return isIdentStart(ch) || (ch >= '0' && ch <= '9');
+}
+
+function isDigit(ch) {
+  return ch >= '0' && ch <= '9';
+}
+
+// Index just past the closing quote, or -1 when the literal never closes on its
+// own line.
+function scanQuoted(source, start, quote) {
+  for (let j = start + 1; j < source.length; j += 1) {
+    const ch = source[j];
+    if (ch === '\\') {
+      j += 1;
+      continue;
+    }
+    if (ch === quote) return j + 1;
+    if (isLineTerminator(ch)) return -1;
+  }
+  return -1;
+}
+
+// Index just past the closing backtick, or -1. `${…}` interpolations are masked
+// along with the rest: the file already fails on the backtick pattern, so no
+// construct inside one can go unnoticed.
+function scanTemplate(source, start) {
+  for (let j = start + 1; j < source.length; j += 1) {
+    if (source[j] === '\\') {
+      j += 1;
+      continue;
+    }
+    if (source[j] === '`') return j + 1;
+  }
+  return -1;
+}
+
+// { bodyEnd, end } for the regex literal at source[start], or null when it is
+// unterminated. Inside a character class a `/` is just a character.
+function scanRegex(source, start) {
+  let inClass = false;
+  for (let j = start + 1; j < source.length; j += 1) {
+    const ch = source[j];
+    if (ch === '\\') {
+      j += 1;
+      continue;
+    }
+    if (isLineTerminator(ch)) return null;
+    if (ch === '[') {
+      inClass = true;
+    } else if (ch === ']' && inClass) {
+      inClass = false;
+    } else if (ch === '/' && !inClass) {
+      let end = j + 1;
+      while (end < source.length && isIdentPart(source[end])) end += 1;
+      return { bodyEnd: j, end };
+    }
+  }
+  return null;
+}
+
+// A `{` opens a statement/function body after `)`, `;`, another `{`/`}`, `=>`,
+// `else`/`do`/`try`/`finally` or at the start of the input — elsewhere it is an
+// object literal. The distinction only matters for a `/` directly after `}`:
+// statement position opens a regex, expression position is division.
+function braceKind(prev) {
+  if (prev === null) return 'block';
+  if (prev.type === 'punct') {
+    if (prev.text === ')' || prev.text === ';' || prev.text === '{' || prev.text === '}' || prev.text === '=>') {
+      return 'block';
+    }
+  }
+  if (
+    prev.type === 'word' &&
+    (prev.text === 'else' || prev.text === 'do' || prev.text === 'try' || prev.text === 'finally')
+  ) {
+    return 'block';
+  }
+  return 'object';
+}
+
+// The single masking pass. Returns the masked text (same length, same line
+// breaks) plus every span it could not read; the caller turns those into a
+// failure, so a file the masker does not understand can never pass.
+function maskSource(source) {
+  const masked = source.split('');
+  const errors = [];
+  const braces = [];
+  let prev = null; // the previous significant token: { type, text } or null
+  let i = 0;
+
+  function blank(from, to) {
+    for (let k = from; k < to && k < source.length; k += 1) {
+      if (!isLineTerminator(masked[k])) masked[k] = ' ';
+    }
+  }
+
+  function fail(message, offset) {
+    errors.push(message + ' at offset ' + offset);
+  }
+
+  // Value position opens a regex literal; expression position means division.
+  // `null` = the masker cannot tell, which must fail closed.
+  function regexAllowed() {
+    if (prev === null) return true;
+    if (prev.type === 'value') return false;
+    if (prev.type === 'unknown') return null;
+    if (prev.type === 'word') return VALUE_KEYWORDS.has(prev.text);
+    if (prev.text === ')' || prev.text === ']') return false;
+    if (prev.text === '++' || prev.text === '--') return false;
+    if (prev.text === '}') return prev.brace !== 'object';
+    return true;
+  }
+
+  while (i < source.length) {
+    const ch = source[i];
+
+    if (isLineTerminator(ch) || isSpace(ch)) {
+      i += 1;
+      continue;
+    }
+
+    // Comments are recognised before regex/division: `//` and `/*` can never
+    // open a regex literal. A comment is not a token, so `prev` is unchanged.
+    if (ch === '/' && source[i + 1] === '/') {
+      let j = i + 2;
+      while (j < source.length && !isLineTerminator(source[j])) j += 1;
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    if (ch === '/' && source[i + 1] === '*') {
+      const close = source.indexOf('*/', i + 2);
+      if (close === -1) {
+        fail('unterminated block comment', i);
+        blank(i, source.length);
+        break;
+      }
+      blank(i, close + 2);
+      i = close + 2;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      const end = scanQuoted(source, i, ch);
+      if (end === -1) {
+        fail('unterminated ' + (ch === "'" ? 'single' : 'double') + '-quoted string', i);
+        blank(i + 1, source.length);
+        break;
+      }
+      blank(i + 1, end - 1); // the quotes stay visible
+      i = end;
+      prev = { type: 'value' };
+      continue;
+    }
+
+    if (ch === '`') {
+      const end = scanTemplate(source, i);
+      if (end === -1) {
+        fail('unterminated template literal', i);
+        blank(i + 1, source.length);
+        break;
+      }
+      blank(i + 1, end - 1); // the backticks stay visible
+      i = end;
+      prev = { type: 'value' };
+      continue;
+    }
+
+    if (ch === '/') {
+      const allowed = regexAllowed();
+      if (allowed === null) {
+        fail('cannot classify this "/" (previous token ' + JSON.stringify(prev.text) + ' is not known ES5 syntax)', i);
+        i += 1;
+        prev = { type: 'punct', text: '/' };
+        continue;
+      }
+      if (allowed) {
+        const regex = scanRegex(source, i);
+        if (regex === null) {
+          fail('unterminated regular expression', i);
+          blank(i + 1, source.length);
+          break;
+        }
+        blank(i + 1, regex.bodyEnd); // body
+        blank(regex.bodyEnd + 1, regex.end); // flags
+        i = regex.end;
+        prev = { type: 'value' };
+        continue;
+      }
+      i += 1; // division stays visible
+      prev = { type: 'punct', text: '/' };
+      continue;
+    }
+
+    if (isIdentStart(ch)) {
+      let j = i + 1;
+      while (j < source.length && isIdentPart(source[j])) j += 1;
+      prev = { type: 'word', text: source.slice(i, j) };
+      i = j;
+      continue;
+    }
+
+    if (isDigit(ch) || (ch === '.' && isDigit(source[i + 1] || ''))) {
+      let j = i + 1;
+      while (j < source.length && (isIdentPart(source[j]) || source[j] === '.')) j += 1;
+      prev = { type: 'value' };
+      i = j;
+      continue;
+    }
+
+    const punct = PUNCTUATORS.find((token) => source.startsWith(token, i));
+    if (punct === undefined) {
+      // Not syntax this masker knows (a decorator, a hash name…). Remember it
+      // so a following `/` is reported instead of guessed at.
+      prev = { type: 'unknown', text: ch };
+      i += 1;
+      continue;
+    }
+    if (punct === '{') {
+      braces.push(braceKind(prev));
+    } else if (punct === '}') {
+      prev = { type: 'punct', text: '}', brace: braces.length > 0 ? braces.pop() : 'block' };
+      i += 1;
+      continue;
+    }
+    prev = { type: 'punct', text: punct };
+    i += punct.length;
+  }
+
+  return { text: masked.join(''), errors };
+}
+
+function readMasked(path) {
+  return maskSource(readFileSync(path, 'utf8'));
+}
+
+// A file is masked once and its masking errors are reported once, even though a
+// tree with two rule sets (app/js: syntax + CommonJS) scans the same file twice.
+const maskedFiles = new Map();
+const maskErrorsReported = new Set();
+
+function masked(path) {
+  if (!maskedFiles.has(path)) maskedFiles.set(path, readMasked(path));
+  return maskedFiles.get(path);
+}
+
+function reportMaskErrors(path, label) {
+  const { errors } = masked(path);
+  if (errors.length === 0 || maskErrorsReported.has(path)) return errors.length > 0;
+  maskErrorsReported.add(path);
+  for (const message of errors) {
+    console.error('FAIL: ' + label + ' — ' + message + '; cannot verify the file, fix the syntax.');
+  }
+  return true;
 }
 
 const dir = 'app/js';
@@ -96,7 +386,9 @@ if (!existsSync(dir)) {
 function scanTokens(root, names, prefix, tokens, suffix = '') {
   let failed = false;
   for (const name of names) {
-    const text = scrub(readFileSync(join(root, name), 'utf8'));
+    const path = join(root, name);
+    if (reportMaskErrors(path, prefix + name)) failed = true;
+    const { text } = masked(path);
     for (const entry of tokens) {
       const label = entry[0];
       const pattern = entry[1];
@@ -143,7 +435,8 @@ if (srcFiles.length === 0) {
   failed = true;
 }
 for (const file of srcFiles) {
-  const text = scrub(readFileSync(file, 'utf8'));
+  if (reportMaskErrors(file, file)) failed = true;
+  const { text } = masked(file);
   if (/^\s*(?:import|export)\b/m.test(text)) {
     console.error(
       'FAIL: ' + file + ' uses import/export — src must stay plain-script (IIFE globals), not CommonJS modules.'
