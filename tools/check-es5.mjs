@@ -213,6 +213,7 @@ function braceKind(prev) {
 function maskSource(source) {
   const masked = source.split('');
   const errors = [];
+  const regexes = [];
   const braces = [];
   const parens = [];
   let prev = null; // the previous significant token: { type, text, … } or null
@@ -329,6 +330,10 @@ function maskSource(source) {
         }
         blank(i + 1, regex.bodyEnd); // body
         blank(regex.bodyEnd + 1, regex.end); // flags
+        regexes.push({
+          body: source.slice(i + 1, regex.bodyEnd),
+          flags: source.slice(regex.bodyEnd + 1, regex.end),
+        });
         i = regex.end;
         prev = { type: 'value' };
         continue;
@@ -379,7 +384,7 @@ function maskSource(source) {
     i += punct.length;
   }
 
-  return { text: masked.join(''), errors };
+  return { text: masked.join(''), errors, regexes };
 }
 
 function readMasked(path) {
@@ -394,6 +399,41 @@ const maskErrorsReported = new Set();
 function masked(path) {
   if (!maskedFiles.has(path)) maskedFiles.set(path, readMasked(path));
   return maskedFiles.get(path);
+}
+
+// Post-ES5 features INSIDE a regex literal. The masker blanks literal bodies on
+// purpose (their `/` bytes must not be read as code), so no text pattern can
+// see them and this pass reads the recorded literals instead. Every entry was
+// measured against the real node v8.17.0 binary; the ones node 8 ACCEPTS are
+// deliberately absent (see the header for the policy gap that leaves):
+//   /(?<ip>\d+)/  --check passes, then SyntaxError when the literal is compiled
+//   /\p{L}/u       --check passes, then SyntaxError when the literal is compiled
+//   /a/d, /a/v     SyntaxError at --check
+//   /(?<=a)b/, /a/s, /\u{1F600}/u   accepted by node 8.17 — not flagged
+const REGEX_FEATURES = [
+  ['named capture group (ES2018)', (body) => /\(\?<[A-Za-z_$]/.test(body)],
+  [
+    'Unicode property escape (ES2018) with the u flag',
+    (body, flags) => flags.includes('u') && /\\[pP]\{/.test(body),
+  ],
+  ['hasIndices regular expression flag "d" (ES2022)', (body, flags) => flags.includes('d')],
+  ['unicodeSets regular expression flag "v" (ES2024)', (body, flags) => flags.includes('v')],
+];
+
+// One FAIL line per file, so a literal with two features does not report twice.
+function scanRegexFeatures(root, names, prefix) {
+  let failed = false;
+  for (const name of names) {
+    const { regexes } = masked(join(root, name));
+    const hit = REGEX_FEATURES.find(([, test]) =>
+      regexes.some((literal) => test(literal.body, literal.flags))
+    );
+    if (hit !== undefined) {
+      console.error('FAIL: ' + prefix + name + ' contains ' + hit[0]);
+      failed = true;
+    }
+  }
+  return failed;
 }
 
 function reportMaskErrors(path, label) {
@@ -580,6 +620,9 @@ if (checked.length === 0) failed = true;
 if (scanTokens(dir, checked, '', patterns)) {
   failed = true;
 }
+if (scanRegexFeatures(dir, checked, '')) {
+  failed = true;
+}
 // app/js is loaded by the webview as plain <script>: CommonJS tokens break it.
 if (scanTokens(dir, checked, '', commonJsTokens, ' — app/js must stay plain-script <script>-loadable')) {
   failed = true;
@@ -596,8 +639,9 @@ const scriptFiles = filesIn(
 );
 if (scriptFiles.length === 0) {
   failed = true;
-} else if (scanTokens(scriptsDir, scriptFiles, scriptsDir + '/', patterns)) {
-  failed = true;
+} else {
+  if (scanTokens(scriptsDir, scriptFiles, scriptsDir + '/', patterns)) failed = true;
+  if (scanRegexFeatures(scriptsDir, scriptFiles, scriptsDir + '/')) failed = true;
 }
 
 // Layer 1 of the plain-script guard: the source itself must never use

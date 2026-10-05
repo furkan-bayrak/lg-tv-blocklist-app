@@ -487,6 +487,39 @@ test('fails when app/scripts has no .js files instead of silently skipping it', 
 });
 
 // ---------------------------------------------------------------------------
+// Round 2, hole C4: regex literal bodies are masked by design, so a pattern
+// node 8 cannot compile sailed through with rc 0. Verified against the real
+// node v8.17.0 binary — /(?<ip>\d+)/ and /\p{L}/u pass `--check` but throw
+// SyntaxError when the literal is compiled, and /a/d, /a/v are refused at
+// `--check`; all four are a device break. The literals node 8.17 ACCEPTS
+// (lookbehind, the `s`/`y`/`u` flags, \u{…}u) are deliberately not flagged.
+// ---------------------------------------------------------------------------
+test('node-8-fatal regex features fail in both trees (named group, \\p{…}/u, d and v flags)', () => {
+  for (const [name, code, expected] of [
+    ['named capture group', 'var re = /(?<ip>\\d+)/;\n', /contains named capture group/],
+    ['Unicode property escape', 'var re = /\\p{L}+/u;\n', /contains Unicode property escape/],
+    ['negative Unicode property escape', 'var re = /\\P{L}+/u;\n', /contains Unicode property escape/],
+    ['hasIndices flag', 'var re = /a.b/d;\n', /contains hasIndices regular expression flag/],
+    ['unicodeSets flag', 'var re = /[a&&b]/v;\n', /contains unicodeSets regular expression flag/],
+  ]) {
+    assertFailsInBothTrees(name, code, expected);
+  }
+});
+
+test('still passes: regex features node v8.17.0 accepts (lookbehind, s/y/u flags, \\u{…}u)', () => {
+  for (const code of [
+    'var a = /(?<=x)y/;\n',
+    'var b = /(?<!x)y/;\n',
+    'var c = /a.b/s;\n',
+    'var d = /a/gimy;\n',
+    'var e = /\\u{1F600}/u;\n',
+  ]) {
+    const r = runChecker({ ...baseFiles(), 'app/js/main.js': code });
+    assert.equal(r.status, 0, `${JSON.stringify(code)} must pass (stdout=${r.stdout} stderr=${r.stderr})`);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Round 2, hole A: filesIn() recursed for src only, so a nested file in
 // app/scripts or app/js was never scanned. Measured before the fix: a nested
 // `app/scripts/lib/deep.js` holding `var v = a?.b;` — which the real node
