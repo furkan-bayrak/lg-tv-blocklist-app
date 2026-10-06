@@ -67,6 +67,18 @@
 # side (`materialize-fail reason=empty-list`, nothing published), which covers a
 # diff that pre-exists or a preset that changed under it.
 #
+# Every rejection above ALSO emits one machine-readable line on stderr, for the
+# UI:
+#   OVERRIDES-REJECT reason=<reason>[ tier=<name>]
+# It is ASCII, single-line, grep-able and carries no user data — never the
+# offending name or line number, only the reason word and, for reject-last, the
+# preset that would have been emptied (safe|strict, or legacy for a pre-tier
+# bundle: the same value the journal detail carries). It is emitted before the
+# human prose line, which is unchanged, as are the journal lines and the reason
+# words' order. materialize_config() emits the same family for the sibling
+# empty-list refusal (OVERRIDES-REJECT reason=empty-list tier=<active>), so the
+# UI parses one prefix for "refused: this would leave nothing blocked".
+#
 # Failures to read the world are exit 1 (journaled "overrides-fail reason=<r>"):
 #   no-preset (the active tier's bundled list is missing — the same refusal
 #   materialize makes, see the F1 note in common.sh), no-domains, read-failed,
@@ -119,8 +131,11 @@ trap 'rm -f "$OV_TMP" "$OV_PRE" "$OV_CAND" "$OV_LIST" "$OV_PAY" "$OV_RAW" "$OV_S
 # Rejected payload / bad usage: nothing written, exit 2. The journal records the
 # reason (and the line number where it applies), never the payload's text: the
 # journal is read by other components, and the UI already has the payload.
-ov_reject() {  # $1 reason, $2 detail (journal only), $3 message (stderr)
+ov_reject() {  # $1 reason, $2 detail (journal only), $3 message (stderr), $4 token field (optional)
   log "overrides-reject reason=$1${2:+ $2}"
+  # The UI's copy of the refusal (see the header): stable, ASCII, no user data.
+  # $4 is only ever the tier field for reject-last; nothing else may be added.
+  echo "OVERRIDES-REJECT reason=$1${4:+ $4}" >&2
   echo "overrides.sh: $3" >&2
   exit 2
 }
@@ -288,7 +303,8 @@ case "$ov_cmd" in
       ov_preset_names "$OV_LIST" > "$OV_CAND"
       if [ ! -s "$OV_CAND" ]; then
         ov_reject reject-last "tier=$(ov_tier_of "$ov_p")" \
-          "refusing to turn off the last blocked domain: the $(ov_tier_of "$ov_p") preset list would have no entries left"
+          "refusing to turn off the last blocked domain: the $(ov_tier_of "$ov_p") preset list would have no entries left" \
+          "tier=$(ov_tier_of "$ov_p")"
       fi
       [ "$ov_p" = "$OV_PRESET" ] && cp "$OV_CAND" "$OV_ACT"
     done < "$OV_SHIP"

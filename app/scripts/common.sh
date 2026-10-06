@@ -363,6 +363,12 @@ materialize_config() {
   if [ "$(list_entry_count "$mt_tmp")" -eq 0 ]; then
     rm -f "$mt_tmp"
     log "materialize-fail reason=empty-list"
+    # The UI's copy of this refusal (same token family as overrides.sh's
+    # reject-last, which refuses the same result at save time): the active tier
+    # is the preset whose list this materialize would have emptied. Stderr only —
+    # callers' stdout/exit codes are unchanged and check.sh's block is not
+    # touched. No user data, one ASCII line.
+    echo "OVERRIDES-REJECT reason=empty-list tier=$(tier_get)" >&2
     return 1
   fi
   mv -f "$mt_tmp" "$STATE/filter-input.txt" || { rm -f "$mt_tmp"; return 1; }

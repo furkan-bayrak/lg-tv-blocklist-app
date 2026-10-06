@@ -1795,6 +1795,23 @@ ov_reject_case() {  # ov_reject_case <label> <payload> <reason>
   else
     no "save rejects $1 (reason=$3)" "$(tail -2 "$SB/state/journal.log" 2>/dev/null | tr '\n' ' ')"
   fi
+  # S6b T7/T8 enablement: the machine-readable refusal the UI parses. -x demands
+  # the token be a line of its own with exactly this text, and the count must be
+  # 1: deleting the token, changing its spelling, echoing user data into it, or
+  # adding a second one all turn this into a FAIL (the counterfactual is the
+  # implementation two lines up in ov_reject).
+  ov_tok_n="$(grep -c '^OVERRIDES-REJECT' "$SB/stderr" 2>/dev/null || true)"
+  if [ "${ov_tok_n:-0}" = "1" ] && grep -qx "OVERRIDES-REJECT reason=$3" "$SB/stderr" 2>/dev/null; then
+    ok "save rejects $1 (one UI token, reason=$3)"
+  else
+    no "save rejects $1 (one UI token, reason=$3)" "count=${ov_tok_n:-0} stderr=[$(cat "$SB/stderr" 2>/dev/null | tr '\n' ' ')]"
+  fi
+  # ...and the human prose line is still there, unchanged.
+  if grep -q '^overrides.sh: ' "$SB/stderr" 2>/dev/null; then
+    ok "save rejects $1 (human prose kept)"
+  else
+    no "save rejects $1 (human prose kept)" "stderr=[$(cat "$SB/stderr" 2>/dev/null | tr '\n' ' ')]"
+  fi
 }
 
 # --- T5 case 1: `list` with no overrides = the preset, dense, in file order ----
@@ -2084,6 +2101,10 @@ OV_PAYLOAD="$(sed 's/$/=off/' "$SB/ov-safe-rows.txt")"
 ov_run save
 if [ "$RC" -eq 2 ]; then ok "cross-tier: emptying the SAFE preset under STRICT is refused (rc 2)"; else no "cross-tier: emptying the SAFE preset under STRICT is refused" "rc=$RC [$(printf '%s\n' "$OUT" | tr '\n' ' ')]"; fi
 if jrnl 'overrides-reject reason=reject-last tier=safe'; then ok "cross-tier: the journal names the refusal and the preset it would empty (active tier=strict, tier=safe)"; else no "cross-tier: the journal names reject-last + tier=safe" "$(tail -2 "$SB/state/journal.log" 2>/dev/null | tr '\n' ' ')"; fi
+# The UI's half: ONE token line naming the refusal and the preset it would have
+# emptied. exact-match (-x) with the tier value, so dropping tier= or reporting
+# the ACTIVE tier (strict) here fails.
+if grep -qx 'OVERRIDES-REJECT reason=reject-last tier=safe' "$SB/stderr" 2>/dev/null; then ok "cross-tier: the UI token names reject-last + the preset it would empty (tier=safe)"; else no "cross-tier: the UI token names reject-last + tier=safe" "stderr=[$(cat "$SB/stderr" 2>/dev/null | tr '\n' ' ')]"; fi
 if grep -q 'refusing to turn off the last blocked domain' "$SB/stderr" 2>/dev/null && ! grep -q '=off' "$SB/stderr" 2>/dev/null; then ok "cross-tier: the refusal explains itself on stderr (no payload echo)"; else no "cross-tier: the refusal explains itself on stderr" "[$(tr '\n' ' ' < "$SB/stderr" 2>/dev/null)]"; fi
 if cmp -s "$SB/state/overrides.txt" "$SB/ov-keep.txt"; then ok "cross-tier: the stored diff is byte-identical after the refusal"; else no "cross-tier: the stored diff is byte-identical" "[$(tr '\n' ' ' < "$SB/state/overrides.txt" 2>/dev/null)]"; fi
 ov_no_tmp "cross-tier: no scratch file left behind"
@@ -2097,6 +2118,7 @@ printf 'tier=safe\n' > "$SB/state/state"
 OV_PAYLOAD="$(sed 's/$/=off/' "$SB/ov-safe-rows.txt")"
 ov_run save
 if [ "$RC" -eq 2 ] && tail -1 "$SB/state/journal.log" 2>/dev/null | grep -q 'overrides-reject reason=reject-last tier=safe'; then ok "reject-last: the ACTIVE preset emptied is refused (tier=safe, rc 2)"; else no "reject-last: the ACTIVE preset emptied is refused" "rc=$RC $(tail -1 "$SB/state/journal.log" 2>/dev/null)"; fi
+if grep -qx 'OVERRIDES-REJECT reason=reject-last tier=safe' "$SB/stderr" 2>/dev/null; then ok "reject-last: the UI token matches the journal (tier=safe, active tier too)"; else no "reject-last: the UI token matches the journal" "stderr=[$(cat "$SB/stderr" 2>/dev/null | tr '\n' ' ')]"; fi
 if cmp -s "$SB/state/overrides.txt" "$SB/ov-keep.txt"; then ok "reject-last: the stored diff stands after both refusals"; else no "reject-last: the stored diff stands" "[$(tr '\n' ' ' < "$SB/state/overrides.txt" 2>/dev/null)]"; fi
 cleanup_app_sandbox
 
@@ -2117,9 +2139,13 @@ cp "$SB/state/filter-input.txt" "$SB/ov-prev.txt"
 ov_prev_n=$(grep -c . "$SB/ov-prev.txt" | tr -d ' ')
 printf 'tier=safe\n' > "$SB/state/state"
 ov_names | while IFS= read -r n; do printf -- '-%s\n' "$n"; done > "$SB/state/overrides.txt"
-OUT="$(probe_run materialize 192.168.5.5)"
+OUT="$(probe_run materialize 192.168.5.5 2>"$SB/stderr")"
 if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=1" ]; then ok "empty-list: the switch + emptying diff fails closed (rc 1)"; else no "empty-list: the switch + emptying diff fails closed" "got [$OUT]"; fi
 if jrnl 'materialize-fail reason=empty-list'; then ok "empty-list: journal names the reason"; else no "empty-list: journal names the reason" "$(tail -2 "$SB/state/journal.log" 2>/dev/null | tr '\n' ' ')"; fi
+# The UI's half of this sibling refusal: the same token family as save's
+# reject-last, naming the seam and the ACTIVE tier whose list would have been
+# emptied. Delete the echo in materialize_config and this case fails.
+if grep -qx 'OVERRIDES-REJECT reason=empty-list tier=safe' "$SB/stderr" 2>/dev/null; then ok "empty-list: the UI token names the seam + the active tier (tier=safe)"; else no "empty-list: the UI token names the seam + the active tier" "stderr=[$(cat "$SB/stderr" 2>/dev/null | tr '\n' ' ')]"; fi
 if cmp -s "$SB/state/filter-input.txt" "$SB/ov-prev.txt"; then ok "empty-list: the live filter input is byte-identical (the previous list keeps protecting)"; else no "empty-list: the live filter input is byte-identical" "now $(grep -c . "$SB/state/filter-input.txt") lines"; fi
 if [ "$(sed -e '/^#/d' -e '/^$/d' "$SB/state/filter-input.txt" | wc -l | tr -d ' ')" = "$(sed -e '/^#/d' -e '/^$/d' "$SB/ov-prev.txt" | wc -l | tr -d ' ')" ] && [ "$ov_prev_n" -gt 0 ]; then ok "empty-list: the published list still holds its entries ($ov_prev_n lines)"; else no "empty-list: the published list still holds its entries" "$(grep -c . "$SB/state/filter-input.txt")/$ov_prev_n"; fi
 if [ -z "$(find "$SB/state" -maxdepth 1 -name 'filter-input.txt.*' 2>/dev/null)" ]; then ok "empty-list: no scratch file left behind"; else no "empty-list: no scratch file left behind" "$(find "$SB/state" -maxdepth 1 -name 'filter-input.txt.*' | tr '\n' ' ')"; fi
@@ -2127,12 +2153,17 @@ if [ -z "$(find "$SB/state" -maxdepth 1 -name 'filter-input.txt.*' 2>/dev/null)"
 # and the rules it may have already changed are rolled back by the existing path.
 run_app apply.sh
 assert_result "empty-list: apply fails open (reason=materialize)" fail materialize
+# apply's stdout is unchanged (the RESULT/reason block the panel parses), and it
+# still must carry the token on stderr so the UI can say WHY it failed.
+if grep -qx 'OVERRIDES-REJECT reason=empty-list tier=safe' "$SB/stderr" 2>/dev/null; then ok "empty-list: apply's stderr carries the same token (stdout stays the block)"; else no "empty-list: apply's stderr carries the same token" "stderr=[$(cat "$SB/stderr" 2>/dev/null | tr '\n' ' ')]"; fi
 if jrnl 'materialize-fail reason=empty-list'; then ok "empty-list: apply's journal still names the real cause"; else no "empty-list: apply's journal still names the real cause" "$(tail -3 "$SB/state/journal.log" 2>/dev/null | tr '\n' ' ')"; fi
 if cmp -s "$SB/state/filter-input.txt" "$SB/ov-prev.txt"; then ok "empty-list: apply left the live list untouched too"; else no "empty-list: apply left the live list untouched too" "$(grep -c . "$SB/state/filter-input.txt") lines"; fi
 # Positive control: the guard is about the RESULT, not about diffs.
 rm -f "$SB/state/overrides.txt"
-OUT="$(probe_run materialize 192.168.5.5)"
+OUT="$(probe_run materialize 192.168.5.5 2>"$SB/stderr")"
 if [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = "rc=0" ] && cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-safe.txt"; then ok "empty-list: with the diff gone the SAFE list materializes byte for byte"; else no "empty-list: with the diff gone the SAFE list materializes" "got [$OUT]"; fi
+# No false positive: a materialize that publishes says nothing on stderr.
+if ! grep -q '^OVERRIDES-REJECT' "$SB/stderr" 2>/dev/null; then ok "empty-list: a successful materialize emits no token"; else no "empty-list: a successful materialize emits no token" "stderr=[$(cat "$SB/stderr" 2>/dev/null | tr '\n' ' ')]"; fi
 cleanup_app_sandbox
 
 # --- Summary -----------------------------------------------------------------
