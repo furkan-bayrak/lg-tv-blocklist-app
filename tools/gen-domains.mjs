@@ -56,6 +56,23 @@
  * identical content. Written atomically (tmp + rename) and only after every
  * check below has passed: a failure leaves the previous file untouched.
  *
+ * SECOND OUTPUT — src/domains.gen.ts (the UI's copy). The webview cannot read
+ * files at runtime and the fixed bridge command set has no read command, so the
+ * row metadata the S6b domain-list UI renders has to be compiled in. The same
+ * run emits it from the same rows: a committed plain-script TypeScript module
+ * (global LgDomains), field-per-row plus each tier's preset entry count. That
+ * count is list_entry_count's rule from common.sh — every non-comment,
+ * non-blank line of the tier's shipped preset list — i.e. exactly the number
+ * check.sh reports as entries=<N> for that tier with no overrides stored.
+ * Unlike domains.json this file is also regenerable from COMMITTED files alone
+ * (no checkout, no network), because the UI work must not depend on the pin:
+ *     node tools/gen-domains.mjs --emit-ts [tsOutPath]
+ * The two paths emit the same bytes for the same data: --emit-ts reads the
+ * committed domains.json and preset lists, and the full run emits from the
+ * domains.json it just wrote. The full run only emits the module when its
+ * output is the default app/filter/domains.json (a fixture run into a temp dir
+ * must not touch the repo's src/).
+ *
  * FAILS LOUDLY, before writing anything, when
  *   - a source file is missing (lists/*, src/safe.txt, src/strict.txt, src/zones.txt);
  *   - the checkout is not a git repository, or its HEAD is not the commit the
@@ -69,7 +86,12 @@
  *
  * Usage: node tools/gen-domains.mjs [blocklistRepoPath] [outPath]
  *   Defaults: <repo>/../lg-tv-blocklist (sibling checkout) and
- *   <repo>/app/filter/domains.json.
+ *   <repo>/app/filter/domains.json. Emits src/domains.gen.ts as well when the
+ *   output path is the default one.
+ *        node tools/gen-domains.mjs --emit-ts [tsOutPath]
+ *   Offline: reads only <repo>/app/filter/domains.json and the shipped preset
+ *   lists and writes only the TypeScript module (default
+ *   <repo>/src/domains.gen.ts).
  *   LGTVB_FILTER_OUT_DIR=<dir> (test/CI seam, same style as the LGTVB_*
  *   overrides in app/scripts/common.sh) redirects the default out directory.
  *   An outPath must live next to the tier lists it is checked against.
@@ -85,6 +107,8 @@ const DEFAULT_BLOCKLIST_REPO = resolve(REPO_ROOT, '..', 'lg-tv-blocklist');
 const FILTER_DIR = process.env.LGTVB_FILTER_OUT_DIR
   ? resolve(process.env.LGTVB_FILTER_OUT_DIR)
   : join(REPO_ROOT, 'app', 'filter');
+// The committed UI module --emit-ts / the full default run writes.
+const DEFAULT_TS_PATH = join(REPO_ROOT, 'src', 'domains.gen.ts');
 
 // The categories the UI groups by. THE ORDER IS THE ALGORITHM: the first match
 // wins, most specific service first, so an entry whose prose names several
@@ -120,9 +144,28 @@ const CATEGORIES = [
   { category: 'other', text: null }
 ];
 
-const blocklistRepo = process.argv[2] ? resolve(process.argv[2]) : DEFAULT_BLOCKLIST_REPO;
-const outPath = process.argv[3] ? resolve(process.argv[3]) : join(FILTER_DIR, 'domains.json');
+const ARGS = process.argv.slice(2);
+// --emit-ts is the OFFLINE path: it reads the committed app/filter/domains.json
+// plus the two shipped preset lists and writes only the TypeScript module, so it
+// needs no pinned upstream checkout and no network. Without it the positional
+// arguments are the checkout and the domains.json destination, as before.
+const EMIT_TS_ONLY = ARGS.indexOf('--emit-ts') !== -1;
+let tsOutPath = DEFAULT_TS_PATH;
+let positional = ARGS;
+if (EMIT_TS_ONLY) {
+  positional = ARGS.slice(0, ARGS.indexOf('--emit-ts')).concat(ARGS.slice(ARGS.indexOf('--emit-ts') + 1));
+  if (positional.length > 1) {
+    fail('--emit-ts takes at most one argument (the module destination).');
+  }
+  if (positional.length === 1) {
+    tsOutPath = resolve(positional[0]);
+  }
+  positional = [];
+}
+const blocklistRepo = positional[0] ? resolve(positional[0]) : DEFAULT_BLOCKLIST_REPO;
+const outPath = positional[1] ? resolve(positional[1]) : join(FILTER_DIR, 'domains.json');
 const outDir = dirname(outPath);
+const DEFAULT_DOMAINS_PATH = join(FILTER_DIR, 'domains.json');
 
 // Every failure below happens before the first write, so "no partial output" is
 // structural: nothing is written until the whole file is built and validated.
@@ -300,6 +343,269 @@ function compareSets(derived, shipped, label) {
   );
 }
 
+// --- the committed TypeScript module the UI consumes -------------------------
+// Everything below is the SECOND output: src/domains.gen.ts, generated from the
+// committed domains.json plus the shipped preset lists. It is deliberately
+// independent of the pinned checkout so the UI work can regenerate and test it
+// offline (--emit-ts).
+
+const ROW_KEYS = ['name', 'tier', 'category', 'zone', 'note'];
+const TIERS = ['safe', 'strict', 'zone'];
+
+// list_entry_count() from app/scripts/common.sh, to the byte: every line that is
+// neither a comment nor blank is one blocked_names entry. check.sh reports this
+// number as `entries=<N>` for the materialized list, so with no overrides stored
+// (the preset materialized unchanged) the value is the preset list's own count.
+function listEntryCount(file) {
+  let count = 0;
+  for (const line of readLines(file)) {
+    if (line !== '' && line.charAt(0) !== '#') {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+// A TypeScript double-quoted string literal, ASCII only: JSON.stringify does the
+// quoting/escaping, then every non-ASCII code point becomes \uXXXX. Notes are
+// upstream copy and carry typographic characters (em dashes, arrows); escaping
+// them keeps the generated bytes encoding-independent and the module safe to
+// load from a plain <script> tag.
+function tsString(value) {
+  return JSON.stringify(value).replace(/[^\x20-\x7e]/g, (ch) => {
+    return '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0');
+  });
+}
+
+// The generated module text, header and body from one place so the exact
+// regeneration command appears once and cannot drift from the CLI.
+function tsModuleText(rows, entries) {
+  const anchors = rows.filter((row) => row.anchor).length;
+  const lines = [];
+  lines.push('/*');
+  // ASCII only: the whole generated file is 7-bit so its bytes are the same
+  // under any editor encoding, and a plain <script> tag cannot mis-decode it.
+  lines.push(' * src/domains.gen.ts -- GENERATED FILE, DO NOT EDIT BY HAND.');
+  lines.push(' *');
+  lines.push(' * Generator: tools/gen-domains.mjs');
+  lines.push(' * Regenerate from the COMMITTED files alone (no network, no upstream checkout):');
+  lines.push(' *');
+  lines.push(' *     node tools/gen-domains.mjs --emit-ts');
+  lines.push(' *');
+  lines.push(' * The full regeneration (node tools/gen-domains.mjs, which needs the pinned');
+  lines.push(' * lg-tv-blocklist checkout) writes app/filter/domains.json first and emits this');
+  lines.push(' * module from it, so both paths produce the same bytes for the same data.');
+  lines.push(' *');
+  lines.push(' * The TV webview cannot read files at runtime and the fixed bridge command set');
+  lines.push(' * has no read command, so the row metadata has to be compiled in. The single');
+  lines.push(' * source of truth stays app/filter/domains.json; this is that file in the shape');
+  lines.push(' * the UI consumes. rows is domains.json file order (category, then name) with');
+  lines.push(' * anchor true iff the row is a zone anchor (tier === zone, zone === name).');
+  lines.push(' * presetEntries is each tier preset ENTRY COUNT, counted from the shipped');
+  lines.push(' * preset lists with list_entry_count()\'s rule (app/scripts/common.sh), i.e.');
+  lines.push(' * what check.sh reports as entries=<N> for that tier with no overrides.');
+  lines.push(' *');
+  lines.push(' * ES5: plain object literal, no Map/Set, no getters, no template literals, so');
+  lines.push(' * tools/check-es5.mjs and tools/check-node8.mjs stay green on the compiled file.');
+  lines.push(' */');
+  lines.push('');
+  lines.push('interface LgDomainRow {');
+  lines.push('  name: string;');
+  lines.push('  tier: \'safe\' | \'strict\' | \'zone\';');
+  lines.push('  category: string;');
+  lines.push('  zone: string;');
+  lines.push('  anchor: boolean;');
+  lines.push('  note: string;');
+  lines.push('}');
+  lines.push('');
+  lines.push('interface LgDomainsModule {');
+  lines.push('  schema: number;');
+  lines.push('  count: number;');
+  lines.push('  anchors: number;');
+  lines.push('  presetEntries: { safe: number; strict: number };');
+  lines.push('  rows: LgDomainRow[];');
+  lines.push('}');
+  lines.push('');
+  lines.push('var LgDomains: LgDomainsModule = {');
+  lines.push('  schema: 1,');
+  lines.push('  count: ' + rows.length + ',');
+  lines.push('  anchors: ' + anchors + ',');
+  lines.push('  presetEntries: { safe: ' + entries.safe + ', strict: ' + entries.strict + ' },');
+  lines.push('  rows: [');
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    lines.push(
+      '    { name: ' +
+        tsString(row.name) +
+        ', tier: ' +
+        tsString(row.tier) +
+        ', category: ' +
+        tsString(row.category) +
+        ', zone: ' +
+        tsString(row.zone) +
+        ', anchor: ' +
+        (row.anchor ? 'true' : 'false') +
+        ', note: ' +
+        tsString(row.note) +
+        ' }' +
+        (i === rows.length - 1 ? '' : ',')
+    );
+  }
+  lines.push('  ]');
+  lines.push('};');
+  lines.push('');
+  return lines.join('\n');
+}
+
+function requireCommitted(file, why) {
+  if (!existsSync(file)) {
+    fail('missing committed ' + file + ' (' + why + ') — regenerate it before emitting the UI module.');
+  }
+  return file;
+}
+
+// The committed domains.json held to the shape this module ships: exactly the
+// five keys in their generated order, every value the documented type. A
+// hand-edited, truncated or reordered file must fail here, before a byte is
+// written, rather than ship a UI that groups or toggles on a lie.
+function readCommittedRows(file) {
+  requireCommitted(file, 'the UI module\'s source of truth');
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (error) {
+    fail(file + ' is not valid JSON (' + (error.message || error) + ').');
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    fail(file + ' is not a non-empty array of rows.');
+  }
+  const rows = [];
+  for (let i = 0; i < parsed.length; i++) {
+    const raw = parsed[i];
+    const where = file + ' row ' + (i + 1);
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      fail(where + ' is not an object.');
+    }
+    if (Object.keys(raw).join(',') !== ROW_KEYS.join(',')) {
+      fail(where + ' keys are [' + Object.keys(raw).join(', ') + '], expected [' + ROW_KEYS.join(', ') + '].');
+    }
+    if (typeof raw.name !== 'string' || !/^[a-z0-9.-]+$/.test(raw.name)) {
+      fail(where + ' has an invalid name.');
+    }
+    if (!TIERS.includes(raw.tier)) {
+      fail(where + ' has tier ' + JSON.stringify(raw.tier) + '; expected safe|strict|zone.');
+    }
+    if (typeof raw.category !== 'string' || raw.category === '') {
+      fail(where + ' has an invalid category.');
+    }
+    if (typeof raw.zone !== 'string') {
+      fail(where + ' has an invalid zone.');
+    }
+    if (typeof raw.note !== 'string') {
+      fail(where + ' has an invalid note.');
+    }
+    const anchor = raw.tier === 'zone';
+    // An anchor is its own zone; a covered row names a different anchor; a row
+    // that names itself without being an anchor cannot be covered by anything.
+    if (anchor && raw.zone !== raw.name) {
+      fail(where + ' is an anchor but its zone is ' + JSON.stringify(raw.zone) + '.');
+    }
+    if (!anchor && raw.zone === raw.name) {
+      fail(where + ' is not an anchor but its zone is its own name.');
+    }
+    rows.push({
+      name: raw.name,
+      tier: raw.tier,
+      category: raw.category,
+      zone: raw.zone,
+      anchor: anchor,
+      note: raw.note
+    });
+  }
+  // The UI renders rows in file order; a hand-edited file out of order would
+  // silently change the list view, so it is refused here too.
+  for (let i = 1; i < rows.length; i++) {
+    const prev = rows[i - 1];
+    const cur = rows[i];
+    const ordered = prev.category < cur.category || (prev.category === cur.category && prev.name < cur.name);
+    if (!ordered) {
+      fail(file + ' is not in category-then-name order: ' + prev.name + ' -> ' + cur.name + '.');
+    }
+  }
+  return rows;
+}
+
+// Writes atomically (tmp + rename) after every check has passed: a failure
+// leaves the previous file untouched, exactly like domains.json.
+function writeTextAtomic(file, text) {
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = file + '.tmp';
+  try {
+    writeFileSync(tmp, text, 'utf8');
+    renameSync(tmp, file);
+  } catch (error) {
+    try {
+      unlinkSync(tmp);
+    } catch (cleanup) {
+      // The tmp file never existed, or is already gone: the failure below is the
+      // one that matters.
+    }
+    fail('could not write ' + file + ' (' + (error.code || error.message) + ').');
+  }
+}
+
+export function emitTypeScript(domainsFile, safeList, strictList, tsOut) {
+  requireCommitted(safeList, 'the SAFE preset list');
+  requireCommitted(strictList, 'the STRICT preset list');
+  const rows = readCommittedRows(domainsFile);
+  const entries = { safe: listEntryCount(safeList), strict: listEntryCount(strictList) };
+  // The counts come from the shipped lists (the same rule check.sh uses); the row
+  // data has to agree with them, or the module would carry a count and a row set
+  // that describe different lists. Both invariants are proven before the write,
+  // and the test suite asserts them from the other side as well.
+  const safeRows = rows.filter((row) => row.tier === 'safe').length;
+  const anchors = rows.filter((row) => row.anchor).length;
+  if (entries.safe !== safeRows) {
+    fail(
+      'preset entry count mismatch: ' +
+        safeList +
+        ' holds ' +
+        entries.safe +
+        ' entries but ' +
+        safeRows +
+        ' rows are tier safe.'
+    );
+  }
+  if (entries.strict !== rows.length + anchors) {
+    fail(
+      'preset entry count mismatch: ' +
+        strictList +
+        ' holds ' +
+        entries.strict +
+        ' entries but the rows need ' +
+        (rows.length + anchors) +
+        ' (one exact rule per row plus one bare anchor per anchor).'
+    );
+  }
+  writeTextAtomic(tsOut, tsModuleText(rows, entries));
+  console.log(
+    'domains-ts: ' +
+      rows.length +
+      ' rows (safe ' +
+      safeRows +
+      ', strict ' +
+      (rows.length - safeRows - anchors) +
+      ', zone ' +
+      anchors +
+      '), preset entries safe ' +
+      entries.safe +
+      ' / strict ' +
+      entries.strict +
+      ' -> ' +
+      tsOut
+  );
+}
+
 function main() {
   const listSafe = requireSource(join(blocklistRepo, 'lists', 'safe-domains.txt'), 'SAFE name set');
   const listStrict = requireSource(join(blocklistRepo, 'lists', 'strict-domains.txt'), 'STRICT name set');
@@ -402,20 +708,14 @@ function main() {
     'name set'
   );
 
-  const text = JSON.stringify(rows, null, 2) + '\n';
-  mkdirSync(outDir, { recursive: true });
-  const tmp = outPath + '.tmp';
-  try {
-    writeFileSync(tmp, text, 'utf8');
-    renameSync(tmp, outPath);
-  } catch (error) {
-    try {
-      unlinkSync(tmp);
-    } catch (cleanup) {
-      // The tmp file never existed, or is already gone: the failure below is the
-      // one that matters.
-    }
-    fail('could not write ' + outPath + ' (' + (error.code || error.message) + ').');
+  writeTextAtomic(outPath, JSON.stringify(rows, null, 2) + '\n');
+
+  // The UI's copy of the same rows, but only for a real regeneration into the
+  // repo's app/filter (fixture runs into a temp dir must not touch src/). It
+  // re-reads the file just written through the same validation the offline path
+  // uses, so both paths emit identical bytes for identical data.
+  if (outPath === DEFAULT_DOMAINS_PATH) {
+    emitTypeScript(outPath, shippedSafe, shippedStrict, tsOutPath);
   }
 
   if (unannotated.length > 0) {
@@ -457,5 +757,14 @@ function main() {
 // only a run as the script itself reaches main(); importing this module (the
 // test imports classify) has no side effects.
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main();
+  if (EMIT_TS_ONLY) {
+    emitTypeScript(
+      DEFAULT_DOMAINS_PATH,
+      join(FILTER_DIR, 'filter-input-safe.txt'),
+      join(FILTER_DIR, 'filter-input-strict.txt'),
+      tsOutPath
+    );
+  } else {
+    main();
+  }
 }

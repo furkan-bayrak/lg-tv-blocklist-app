@@ -139,6 +139,20 @@ entry_count() {  # entry_count <list-file> — same definition as common.sh list
   sed -e '/^#/d' -e '/^$/d' "$1" 2>/dev/null | wc -l | tr -d ' '
 }
 
+module_preset_entry_count() {  # $1 safe|strict — from the committed UI module
+  # The generated module src/domains.gen.ts is the UI's copy of each tier's preset
+  # entry count (the number check.sh reports as entries=<N>). The exact single
+  # line parsed here is pinned byte for byte by tests/ts/domains-gen.test.mjs, so
+  # this is a contract: if the module line changes shape the parse goes empty and
+  # every case below fails loudly instead of comparing nothing.
+  module_line="$(sed -n 's/^  presetEntries: { safe: \([0-9]\{1,\}\), strict: \([0-9]\{1,\}\) },$/\1 \2/p' "$REPO/src/domains.gen.ts")"
+  case $1 in
+    safe) printf '%s\n' "${module_line%% *}" ;;
+    strict) printf '%s\n' "${module_line##* }" ;;
+    *) printf '\n' ;;
+  esac
+}
+
 assert_block() {  # assert_block <name> <expected block>
   name="$1"
   expected="$(printf '%s' "$2" | norm)"
@@ -1099,6 +1113,11 @@ if printf '%s\n' "$OUT" | grep -qx 'tier=safe'; then ok "tier default: check.sh 
 safe_entries="$(entry_count "$SB/state/filter-input.txt")"
 if printf '%s\n' "$OUT" | grep -qx "schema=4"; then ok "entries: the block is schema 4"; else no "entries: the block is schema 4" "OUT: $(printf '%s\n' "$OUT" | tr '\n' ' ')"; fi
 if printf '%s\n' "$OUT" | grep -qx "entries=$safe_entries"; then ok "entries: SAFE reports the materialized list's real count (${safe_entries} of $(wc -l < "$SB/state/filter-input.txt" | tr -d ' ') lines)"; else no "entries: SAFE reports the materialized list's real count" "want entries=$safe_entries, got $(printf '%s\n' "$OUT" | grep '^entries=')"; fi
+# S6b T7/T8 enablement: the committed UI module is what the UI renders the count
+# from, check.sh is what it reports — for the same shipped preset they are one
+# number, and the module's copy is derived from the same list with the same rule.
+md_safe="$(module_preset_entry_count safe)"
+if [ -n "$md_safe" ] && [ "$md_safe" = "$safe_entries" ]; then ok "domains.gen.ts: presetEntries.safe ($md_safe) == check.sh entries=safe"; else no "domains.gen.ts: presetEntries.safe == check.sh entries" "module=[$md_safe] check=[$safe_entries]"; fi
 cleanup_app_sandbox
 
 # --- T2 case 2: tier=strict → the strict preset + visible in @@STATUS ----------
@@ -1116,6 +1135,10 @@ run_check_nostub
 # exact rules + its 8 bare zone anchors = 123 entries, and the comments do not count).
 strict_entries="$(entry_count "$SB/state/filter-input.txt")"
 if printf '%s\n' "$OUT" | grep -qx "entries=$strict_entries"; then ok "entries: STRICT reports the materialized list's real count ($strict_entries)"; else no "entries: STRICT reports the materialized list's real count" "want entries=$strict_entries, got $(printf '%s\n' "$OUT" | grep '^entries=')"; fi
+# Same equality for the other tier: 115 exact rules + 8 bare zone anchors, as the
+# UI module carries it.
+md_strict="$(module_preset_entry_count strict)"
+if [ -n "$md_strict" ] && [ "$md_strict" = "$strict_entries" ]; then ok "domains.gen.ts: presetEntries.strict ($md_strict) == check.sh entries=strict"; else no "domains.gen.ts: presetEntries.strict == check.sh entries" "module=[$md_strict] check=[$strict_entries]"; fi
 assert_block "tier strict: check.sh block (schema 4, entries last)" "@@STATUS-BEGIN
 schema=4
 ts=<TS>
