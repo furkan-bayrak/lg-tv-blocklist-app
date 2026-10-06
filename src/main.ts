@@ -33,6 +33,16 @@
  * filter is running (that is what restarts it with the new list); no new
  * privileged command was added for it.
  *
+ * S6b T7: the domain list panel joins the script's `list` output (the effective
+ * set, the only source of state) with the generated metadata module
+ * (src/domains.gen.ts, the only source of display attributes) and stages
+ * on/off toggles locally. Nothing is written until one explicit Apply, because
+ * every write costs a filter restart (a 2-3 s DNS gap); Apply with protection
+ * off only saves and says so. A refused save arrives as rc 2 plus the
+ * OVERRIDES-REJECT token, which is mapped to the app's own sentence — script
+ * text is never rendered as a message. The decisions themselves (join,
+ * coverage, thresholds, copy) live in src/domainlist.ts, DOM-free.
+ *
  * Status parsing lives in src/status.ts — like src/bridge.ts it is a plain
  * script exposing one global (LgStatus), not a module: the TV loads the
  * compiled JS with plain <script> tags, so CommonJS output must never appear.
@@ -61,13 +71,24 @@
   var tierNote = el('tier-note');
   var tierSafeButton = el('btn-tier-safe') as HTMLButtonElement;
   var tierStrictButton = el('btn-tier-strict') as HTMLButtonElement;
-  // Arrow-key order follows the visual order, tier buttons included: they are
-  // never disabled (a disabled button cannot take remote focus), and every
-  // guard they need lives in the click handler instead.
-  var buttons: HTMLElement[] = [
-    protectButton, tierSafeButton, tierStrictButton, el('btn-refresh'), el('btn-check'),
-    el('btn-state'), el('btn-register'), el('btn-remove')
-  ];
+  // S6b T7: the domain list panel. Its rows are built ONCE from the generated
+  // metadata module (global LgDomains) and reused; what they show comes from the
+  // script's `list` output, never from a locally computed effective set.
+  var domainsStatus = el('domains-status');
+  var domainsNote = el('domains-note');
+  var domainsList = el('domains-list');
+  var domainsApplyButton = el('btn-domain-apply') as HTMLButtonElement;
+  var domainsResetButton = el('btn-domain-reset') as HTMLButtonElement;
+  var domainsConfirm = el('domains-confirm');
+  var domainsConfirmText = el('domains-confirm-text');
+  var domainsConfirmButton = el('btn-domain-reset-confirm') as HTMLButtonElement;
+  var domainsCancelButton = el('btn-domain-reset-cancel') as HTMLButtonElement;
+  // Arrow-key order follows the visual order, tier buttons included. It is
+  // rebuilt whenever the set of controls changes: the reset confirmation
+  // replaces Apply/Reset while it is open, and 115 domain rows are appended
+  // once the list has been read. Outside those states every control keeps its
+  // place, so focus identity survives a re-render.
+  var nav: HTMLElement[] = [];
   var focusIndex = 0;
   var busy = false;
 
@@ -79,6 +100,19 @@
   // active tier is only ever the one a parsed block reported.
   var protectionOn = false;
   var currentTier: 'safe' | 'strict' | null = null;
+  // The last successfully parsed block, kept for the domain panel's attention
+  // line. Null means the TV state could not be read (the panel then says so).
+  var lastBlock: TvStatus | null = null;
+
+  // Domain list view state (S6b T7). `domainState` is null until the script's
+  // list has been read at least once; the list is never rendered from a guess.
+  var domainState: LgDomainState | null = null;
+  var domainsBuilt = false;
+  var rowParts: { [name: string]: LgDomainRowEls } = {};
+  var rowOrder: string[] = [];
+  var domainMessage = '';
+  var domainMessageKind = ''; // '' | 'is-ok' | 'is-error'
+  var confirmOpen = false;
 
   function show(statusText: string, bodyText: string): void {
     statusLine.textContent = statusText;
@@ -125,6 +159,43 @@
     busy = false;
   }
 
+  // ---- focus order -----------------------------------------------------------
+
+  // The focusable controls in visual order. Rebuilt from parts (never mutated in
+  // place) so a hidden control — the Apply/Reset pair while the reset
+  // confirmation is open — can never be focused by an arrow key.
+  function rebuildNav(): void {
+    var next: HTMLElement[] = [protectButton, tierSafeButton, tierStrictButton];
+    if (confirmOpen) {
+      next.push(domainsConfirmButton, domainsCancelButton);
+    } else {
+      next.push(domainsApplyButton, domainsResetButton);
+    }
+    for (var i = 0; i < rowOrder.length; i++) {
+      next.push(rowParts[rowOrder[i]].button);
+    }
+    next.push(el('btn-refresh'), el('btn-check'), el('btn-state'), el('btn-register'), el('btn-remove'));
+    nav = next;
+    var active: Element | null = document.activeElement || null;
+    var index = active ? nav.indexOf(active as HTMLElement) : -1;
+    focusIndex = index === -1 ? 0 : index;
+  }
+
+  function setFocused(node: HTMLElement): void {
+    node.focus();
+  }
+
+  function currentFocusIndex(): number {
+    var active: Element | null = document.activeElement || null;
+    if (active) {
+      var index = nav.indexOf(active as HTMLElement);
+      if (index !== -1) {
+        return index;
+      }
+    }
+    return focusIndex;
+  }
+
   // ---- protection state (live-probed only) ----------------------------------
 
   type ProtectState = 'on' | 'off' | 'attention' | 'degraded' | 'unknown';
@@ -134,7 +205,11 @@
       return 'degraded';
     }
     if (block.mode === 'on') {
-      return 'on';
+      // S6b T7 (review F3): protection can be nominally ON while the materialized
+      // list is empty or nearly so — that is not a healthy green state. The
+      // entry count is the TV's own report, so the card can never claim more
+      // than the TV does.
+      return entriesAttention(block) === 'ok' ? 'on' : 'attention';
     }
     // mode=off: a give-up marker or a stale pointer means something failed
     // mid-way — needs attention, never a clean green claim.
@@ -154,10 +229,21 @@
       protectButton.textContent = 'Turn off protection';
       protectButton.disabled = false;
     } else if (state === 'attention') {
+      // Two different histories reach this state: a recovery that failed while
+      // protection is off (below), and protection that IS on with a list far
+      // shorter than the active preset's (the entries note wins when there is
+      // one). The button always offers the action that is actually possible.
+      var note = lastBlock && lastBlock.mode === 'on' ? entriesAttentionNote(lastBlock) : '';
       protHeadline.textContent = 'Protection needs attention';
-      protText.textContent = 'Protection is off. Your TV is working normally. Turn it on to try again.';
-      protectAction = 'turn-on';
-      protectButton.textContent = 'Turn on protection';
+      if (note) {
+        protText.textContent = note;
+        protectAction = 'turn-off';
+        protectButton.textContent = 'Turn off protection';
+      } else {
+        protText.textContent = 'Protection is off. Your TV is working normally. Turn it on to try again.';
+        protectAction = 'turn-on';
+        protectButton.textContent = 'Turn on protection';
+      }
       protectButton.disabled = false;
     } else if (state === 'degraded') {
       protHeadline.textContent = "This TV can't enforce filtering";
@@ -251,6 +337,7 @@
         'The TV is already using the ' + tierLabel(target) + ' list.');
       return;
     }
+    setDomainMessage('', '');
     runGuarded(function (): void {
       if (!LgBlocklistBridge.available()) {
         show('Bridge unavailable', LgBlocklistBridge.diagnose());
@@ -272,7 +359,7 @@
         if (!protectionOn) {
           // Nothing to restart: persist-and-report. The refresh below shows the
           // tier the TV now reports, which is the only claim the panel makes.
-          refreshStatusInternal(function (): void {
+          refreshAllInternal(function (): void {
             show('Tier saved: ' + label,
               'Protection is off, so the filter was not restarted. The ' + label +
               ' list is used next time protection is turned on.');
@@ -284,7 +371,7 @@
         // materialized and the filter restarts with it.
         var onApplied = function (applyResponse: HbExecResponse): void {
           var message = tierApplyMessage(label, applyResponse);
-          refreshStatusInternal(function (): void {
+          refreshAllInternal(function (): void {
             show(message, formatExec(applyResponse));
           });
         };
@@ -438,6 +525,577 @@
     return reasonMessage(parsed.reason);
   }
 
+  // ---- domain list (S6b T7) --------------------------------------------------
+
+  // One row's live nodes; the row buttons are created once and only their text
+  // and classes are updated, so remote focus keeps pointing at the same node.
+  interface LgDomainRowEls {
+    button: HTMLButtonElement;
+    name: HTMLElement;
+    state: HTMLElement;
+    detail: HTMLElement;
+    note: HTMLElement;
+  }
+
+  // The DOM-free half of the view. Null means the compiled metadata module is
+  // missing (a damaged package) — never "no domains".
+  function listModule(): LgDomainListApi | null {
+    if (typeof LgDomainList === 'undefined' || !LgDomainList) {
+      return null;
+    }
+    return LgDomainList.available() ? LgDomainList : null;
+  }
+
+  function entriesAttention(block: TvStatus): LgDomainAttention {
+    var api = listModule();
+    return api ? api.attention(block.entries, block.tier) : 'ok';
+  }
+
+  function entriesAttentionNote(block: TvStatus): string {
+    var api = listModule();
+    if (!api) {
+      return '';
+    }
+    return api.attentionMessage(api.attention(block.entries, block.tier), block.tier, block.entries);
+  }
+
+  function setDomainMessage(text: string, kind: string): void {
+    domainMessage = text;
+    domainMessageKind = kind;
+  }
+
+  function buildDomainRows(api: LgDomainListApi): void {
+    if (domainsBuilt || typeof LgDomains === 'undefined' || !LgDomains) {
+      return;
+    }
+    var rows = LgDomains.rows;
+    var group: HTMLElement | null = null;
+    var category = '';
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (group === null || row.category !== category) {
+        category = row.category;
+        var section = document.createElement('div');
+        section.className = 'domain-group';
+        var heading = document.createElement('h3');
+        heading.className = 'domain-group-title';
+        heading.textContent = api.categoryLabel(category);
+        section.appendChild(heading);
+        domainsList.appendChild(section);
+        group = section;
+      }
+      var button = document.createElement('button') as HTMLButtonElement;
+      button.className = 'domain-row';
+      button.setAttribute('data-name', row.name);
+      var nameEl = document.createElement('span');
+      nameEl.className = 'domain-name';
+      nameEl.textContent = row.name;
+      var stateEl = document.createElement('span');
+      stateEl.className = 'domain-state';
+      var detailEl = document.createElement('span');
+      detailEl.className = 'domain-detail';
+      var noteEl = document.createElement('span');
+      noteEl.className = 'domain-note';
+      button.appendChild(nameEl);
+      button.appendChild(stateEl);
+      button.appendChild(detailEl);
+      button.appendChild(noteEl);
+      bindDomainRow(button, row.name);
+      group.appendChild(button);
+      rowParts[row.name] = {
+        button: button,
+        name: nameEl,
+        state: stateEl,
+        detail: detailEl,
+        note: noteEl
+      };
+      rowOrder.push(row.name);
+    }
+    domainsBuilt = true;
+    rebuildNav();
+  }
+
+  function bindDomainRow(button: HTMLButtonElement, name: string): void {
+    button.addEventListener('click', function (): void {
+      onDomainRowClick(name);
+    });
+  }
+
+  function domainRowClass(row: LgDomainRowView): string {
+    var parts = ['domain-row', row.on ? 'is-on' : 'is-off'];
+    parts.push(row.control === 'toggle' ? 'is-toggle' : row.control === 'covered' ? 'is-covered' : 'is-info');
+    if (row.anchor) {
+      parts.push('is-zone');
+    }
+    if (row.changed) {
+      parts.push('is-changed');
+    }
+    return parts.join(' ');
+  }
+
+  function renderDomainRow(row: LgDomainRowView, tier: LgDomainTier, api: LgDomainListApi): void {
+    var parts = rowParts[row.name];
+    if (!parts) {
+      return;
+    }
+    var state = api.stateLabel(row) + (row.changed ? ' — staged' : '');
+    var detail = api.rowDetail(tier, row);
+    parts.button.className = domainRowClass(row);
+    parts.button.setAttribute('aria-pressed', row.on ? 'true' : 'false');
+    parts.button.setAttribute('aria-disabled', row.control === 'toggle' ? 'false' : 'true');
+    parts.button.setAttribute('aria-label',
+      row.name + ' — ' + state + (row.control === 'toggle' ? ' — press to change' : ''));
+    parts.state.textContent = state;
+    parts.detail.textContent = detail;
+    parts.detail.hidden = detail === '';
+    parts.note.textContent = row.note;
+    parts.note.hidden = row.note === '';
+  }
+
+  // The whole panel text is composed here, from the parsed block and the parsed
+  // list only: no script text, no device text.
+  function domainStatusText(api: LgDomainListApi): string {
+    var lines: string[] = [];
+    if (domainMessage) {
+      lines.push(domainMessage);
+    }
+    if (domainState) {
+      var changed = domainState.changedCount;
+      lines.push(changed === 0
+        ? 'No unsaved changes.'
+        : changed + (changed === 1 ? ' unsaved change' : ' unsaved changes') +
+          ' — press Apply to write them to the TV.');
+    } else if (!domainMessage) {
+      lines.push('The domain list has not been read from the TV yet — press "Refresh status".');
+    }
+    if (domainState && !lastBlock) {
+      lines.push('The active tier could not be read, so which rows are switchable may be out of date.');
+    }
+    if (domainState && lastBlock) {
+      var level = api.attention(lastBlock.entries, lastBlock.tier);
+      var note = api.attentionMessage(level, lastBlock.tier, lastBlock.entries);
+      if (note) {
+        lines.push(note);
+      }
+    }
+    return lines.join('\n');
+  }
+
+  function domainStatusClass(): string {
+    if (domainMessageKind) {
+      return ' ' + domainMessageKind;
+    }
+    if (domainState && lastBlock) {
+      var level = entriesAttention(lastBlock);
+      if (level === 'empty') {
+        return ' is-attention';
+      }
+      if (level === 'low') {
+        return ' is-notice';
+      }
+    }
+    if (domainState && domainState.changedCount > 0) {
+      return ' is-unsaved';
+    }
+    return '';
+  }
+
+  // Apply/reset cost depends on whether the filter is running (owner decision).
+  function domainNoteText(): string {
+    if (protectionOn) {
+      return 'Changes are staged: press Apply to write them to the TV. Applying restarts the ' +
+        'filter — DNS pauses for 2-3 seconds. Press Reset to preset to drop every domain change.';
+    }
+    return 'Changes are staged: press Apply to write them to the TV. Protection is off, so ' +
+      'nothing restarts — the changes take effect when protection is switched on.';
+  }
+
+  function renderDomains(): void {
+    var api = listModule();
+    if (!api) {
+      domainsStatus.textContent =
+        'The bundled domain list is missing — the installed package looks incomplete. Reinstall ' +
+        'the app.';
+      domainsStatus.className = 'domains-status is-error';
+      domainsNote.textContent = '';
+      return;
+    }
+    domainsList.hidden = domainState === null;
+    domainsStatus.textContent = domainStatusText(api);
+    domainsStatus.className = 'domains-status' + domainStatusClass();
+    domainsNote.textContent = domainNoteText();
+  }
+
+  function renderAllDomainRows(): void {
+    var api = listModule();
+    var state = domainState;
+    if (!api || !state || !domainsBuilt) {
+      return;
+    }
+    for (var i = 0; i < state.rows.length; i++) {
+      renderDomainRow(state.rows[i], state.tier, api);
+    }
+  }
+
+  function onDomainRowClick(name: string): void {
+    var api = listModule();
+    var state = domainState;
+    if (!api || !state) {
+      return;
+    }
+    var row = api.row(state, name);
+    if (!row) {
+      return;
+    }
+    if (row.control === 'toggle') {
+      // Staged, never sent: one Apply writes the sparse diff (a per-toggle
+      // write would restart the filter every time).
+      api.toggle(state, name);
+      setDomainMessage('', '');
+      renderAllDomainRows();
+      renderDomains();
+      return;
+    }
+    // Not switchable: say why, in the app's own words, and move focus to the row
+    // that can change what the user is looking at.
+    setDomainMessage(api.stateLabel(row) + '. ' + api.rowDetail(state.tier, row), '');
+    var covered = row.control === 'covered' ? rowParts[row.coveredBy] : undefined;
+    if (covered) {
+      setFocused(covered.button);
+    }
+    renderDomains();
+  }
+
+  // ---- reading the list ------------------------------------------------------
+
+  /**
+   * Read the effective set from the script and join it with the metadata. Called
+   * with the busy flag held; `after` is responsible for releasing it. A list that
+   * cannot be parsed clears the rows (an explicit error, never stale state).
+   */
+  function loadDomainsInternal(after: () => void): void {
+    var api = listModule();
+    if (!api) {
+      domainState = null;
+      setDomainMessage('', '');
+      renderDomains();
+      after();
+      return;
+    }
+    if (!lastBlock) {
+      // No tier, no view: the joined rows cannot say what is switchable
+      // without it, and guessing is exactly what the panel must not do.
+      domainState = null;
+      renderDomains();
+      after();
+      return;
+    }
+    if (!LgBlocklistBridge.available()) {
+      domainState = null;
+      setDomainMessage('The Homebrew Channel bridge is not available, so the domain list could ' +
+        'not be read.', 'is-error');
+      renderDomains();
+      after();
+      return;
+    }
+    loadDomainsWith(api, lastBlock, after);
+  }
+
+  function loadDomainsWith(api: LgDomainListApi, block: TvStatus, after: () => void): void {
+    LgBlocklistBridge.listOverrides(function (response: HbExecResponse): void {
+      var states = response.returnValue && response.stdoutString
+        ? api.parse(response.stdoutString)
+        : null;
+      if (!states) {
+        // An unreadable list is shown as an error, never as the last known one:
+        // the rows would claim a state nobody can confirm.
+        domainState = null;
+        setDomainMessage('The TV did not return a readable domain list, so nothing is shown. ' +
+          'Press "Refresh status" to try again, and reinstall the app if this keeps happening.',
+          'is-error');
+        renderDomains();
+        show('Domain list not readable', formatExec(response));
+        after();
+        return;
+      }
+      if (domainState) {
+        api.setTier(domainState, block.tier);
+        api.applyList(domainState, states);
+      } else {
+        domainState = api.create(block.tier, states);
+        buildDomainRows(api);
+      }
+      renderAllDomainRows();
+      renderDomains();
+      after();
+    });
+  }
+
+  // ---- writing the list ------------------------------------------------------
+
+  function refusalFallback(response: HbExecResponse): string {
+    if (response.errorText && !response.stdoutString && !response.stderrString) {
+      return 'The TV did not run the command, so the domain list was not modified. Check the ' +
+        'Homebrew Channel bridge with "Check bridge".';
+    }
+    return 'The TV refused the change and did not say why, so the domain list was not modified.';
+  }
+
+  interface LgDomainWriteOutcome {
+    message: string;
+    ok: boolean;
+  }
+
+  function domainApplyOutcome(api: LgDomainListApi, response: HbExecResponse): LgDomainWriteOutcome {
+    if (!response.returnValue) {
+      return {
+        message: 'Changes saved, but the TV did not run the command to re-apply protection. ' +
+          'Press "Turn on protection" to try again.',
+        ok: false
+      };
+    }
+    var parsed = parseResult(response.stdoutString || '');
+    if (!parsed) {
+      return {
+        message: 'Changes saved, but the TV did not return a clear apply result. Check the ' +
+          'status below.',
+        ok: false
+      };
+    }
+    if (parsed.result === 'on') {
+      return { message: 'Domain changes applied. Protection is on.', ok: true };
+    }
+    var token = api.refusalMessage(response.stderrString || '');
+    return {
+      message: 'Changes saved, but protection was not re-applied. ' +
+        (token || reasonMessage(parsed.reason)),
+      ok: false
+    };
+  }
+
+  /** True when the TV reports back exactly the set the user staged. */
+  function stagedMatchesReported(api: LgDomainListApi): boolean {
+    var state = domainState;
+    return state !== null && api.changes(state).length === 0;
+  }
+
+  /** Writes the staged diff with one command, then re-applies or just saves. */
+  function applyDomainChanges(): void {
+    var api = listModule();
+    if (!api) {
+      setDomainMessage('The bundled domain list is missing, so nothing can be changed. Reinstall ' +
+        'the app.', 'is-error');
+      renderDomains();
+      return;
+    }
+    var pending = domainState;
+    if (!pending) {
+      setDomainMessage('The domain list has not been read from the TV yet — press "Refresh ' +
+        'status" first.', 'is-error');
+      renderDomains();
+      return;
+    }
+    runApplyDomainChanges(api, pending);
+  }
+
+  function runApplyDomainChanges(api: LgDomainListApi, state: LgDomainState): void {
+    runGuarded(function (): void {
+      if (!LgBlocklistBridge.available()) {
+        setDomainMessage('The Homebrew Channel bridge is not available, so nothing was sent.', 'is-error');
+        renderDomains();
+        show('Bridge unavailable', LgBlocklistBridge.diagnose());
+        finish();
+        return;
+      }
+      var changes = api.changes(state);
+      if (changes.length === 0) {
+        setDomainMessage('Nothing to apply: no domain changes are staged.', '');
+        renderDomains();
+        finish();
+        return;
+      }
+      setDomainMessage('', '');
+      var count = changes.length;
+      show('Saving ' + count + (count === 1 ? ' domain change…' : ' domain changes…'),
+        protectionOn
+          ? 'Writes the changed domains, then re-applies protection so the filter restarts ' +
+            '(DNS pauses for 2-3 seconds).'
+          : 'Writes the changed domains. Protection is off, so nothing is restarted.');
+      LgBlocklistBridge.saveOverrides(changes, api.knownNames(), function (response: HbExecResponse): void {
+        if (!response.returnValue) {
+          setDomainMessage(api.refusalMessage(response.stderrString || '') || refusalFallback(response),
+            'is-error');
+          finish();
+          renderDomains();
+          show('Domain changes not saved', formatExec(response));
+          return;
+        }
+        if (api.saveResult(response.stdoutString || '') === null) {
+          setDomainMessage('The TV did not return a clear save result, so the change was not ' +
+            'confirmed.', 'is-error');
+          finish();
+          renderDomains();
+          show('Domain save: unclear result', formatExec(response));
+          return;
+        }
+        if (!protectionOn) {
+          // Protection is off: persist and re-list, no restart (owner decision).
+          refreshAllInternal(function (): void {
+            var match = stagedMatchesReported(api);
+            setDomainMessage(match
+              ? 'Changes saved. Protection is off, so nothing was restarted — they take effect ' +
+                'when protection is switched on.'
+              : 'The TV did not report the staged domains back, so the list may not match what ' +
+                'you staged.', match ? 'is-ok' : 'is-error');
+            renderDomains();
+            show('Domain changes saved', formatExec(response));
+          });
+          return;
+        }
+        show('Re-applying protection…',
+          'The filter restarts with the new domain changes (DNS pauses for 2-3 seconds).');
+        LgBlocklistBridge.runApply(function (applyResponse: HbExecResponse): void {
+          var outcome = domainApplyOutcome(api, applyResponse);
+          refreshAllInternal(function (): void {
+            var match = stagedMatchesReported(api);
+            setDomainMessage(match ? outcome.message :
+              'The TV did not report the staged domains back, so the list may not match what you staged.',
+              match && outcome.ok ? 'is-ok' : 'is-error');
+            renderDomains();
+            show('Domain changes saved', formatExec(applyResponse));
+          });
+        });
+      });
+    });
+  }
+
+  // ---- reset to preset -------------------------------------------------------
+
+  function resetRestartNote(): string {
+    return protectionOn
+      ? ' The filter restarts when you confirm (DNS pauses for 2-3 seconds).'
+      : ' Protection is off, so nothing is restarted.';
+  }
+
+  function resetPrompt(): string {
+    if (currentTier === null) {
+      return 'Reset every domain to the active preset? This clears all domain changes — applied ' +
+        'and staged — and restores that preset exactly as it ships.' + resetRestartNote();
+    }
+    var label = tierLabel(currentTier);
+    return 'Reset every domain to the ' + label + ' preset? This clears all domain changes — ' +
+      'applied and staged — and restores the ' + label + ' preset exactly as it ships.' +
+      resetRestartNote();
+  }
+
+  function resetTargetLabel(): string {
+    return currentTier === null ? 'active' : tierLabel(currentTier);
+  }
+
+  function openResetConfirm(): void {
+    if (!listModule()) {
+      setDomainMessage('The bundled domain list is missing, so nothing can be reset here. ' +
+        'Reinstall the app.', 'is-error');
+      renderDomains();
+      return;
+    }
+    setDomainMessage('', '');
+    confirmOpen = true;
+    domainsConfirmText.textContent = resetPrompt();
+    domainsConfirm.hidden = false;
+    rebuildNav();
+    setFocused(domainsConfirmButton);
+    renderDomains();
+  }
+
+  function closeResetConfirm(notice: string): void {
+    confirmOpen = false;
+    domainsConfirm.hidden = true;
+    rebuildNav();
+    setFocused(domainsResetButton);
+    if (notice) {
+      setDomainMessage(notice, '');
+    }
+    renderDomains();
+  }
+
+  function confirmReset(): void {
+    var api = listModule();
+    if (!api) {
+      closeResetConfirm('The bundled domain list is missing, so nothing was reset.');
+      return;
+    }
+    runConfirmReset(api, domainState);
+  }
+
+  function runConfirmReset(api: LgDomainListApi, state: LgDomainState | null): void {
+    runGuarded(function (): void {
+      if (!LgBlocklistBridge.available()) {
+        confirmOpen = false;
+        domainsConfirm.hidden = true;
+        rebuildNav();
+        setFocused(domainsResetButton);
+        setDomainMessage('The Homebrew Channel bridge is not available, so nothing was reset.', 'is-error');
+        renderDomains();
+        show('Bridge unavailable', LgBlocklistBridge.diagnose());
+        finish();
+        return;
+      }
+      confirmOpen = false;
+      domainsConfirm.hidden = true;
+      rebuildNav();
+      setFocused(domainsResetButton);
+      setDomainMessage('', '');
+      show('Resetting domains…', protectionOn
+        ? 'Clearing the domain changes, then re-applying protection so the filter restarts.'
+        : 'Clearing the stored domain changes. Protection is off, so nothing is restarted.');
+      LgBlocklistBridge.clearOverrides(function (response: HbExecResponse): void {
+        if (!response.returnValue) {
+          setDomainMessage(api.refusalMessage(response.stderrString || '') ||
+            'The TV did not clear the domain changes, so nothing was reset.', 'is-error');
+          finish();
+          renderDomains();
+          show('Reset not saved', formatExec(response));
+          return;
+        }
+        if (api.saveResult(response.stdoutString || '') !== 'cleared') {
+          setDomainMessage('The TV did not return a clear reset result, so it was not confirmed.',
+            'is-error');
+          finish();
+          renderDomains();
+          show('Reset: unclear result', formatExec(response));
+          return;
+        }
+        // The staged edits belonged to the diff the reset just removed.
+        if (state) {
+          api.discardStages(state);
+        }
+        if (!protectionOn) {
+          refreshAllInternal(function (): void {
+            renderDomains();
+            setDomainMessage('Domains reset to the ' + resetTargetLabel() + ' preset. Protection ' +
+              'is off, so nothing was restarted — the preset is used next time protection is ' +
+              'turned on.', 'is-ok');
+            renderDomains();
+            show('Domains reset', formatExec(response));
+          });
+          return;
+        }
+        LgBlocklistBridge.runApply(function (applyResponse: HbExecResponse): void {
+          var outcome = domainApplyOutcome(api, applyResponse);
+          refreshAllInternal(function (): void {
+            renderDomains();
+            setDomainMessage(outcome.ok
+              ? 'Domains reset to the ' + resetTargetLabel() + ' preset; protection is on.'
+              : outcome.message, outcome.ok ? 'is-ok' : 'is-error');
+            renderDomains();
+            show('Domains reset', formatExec(applyResponse));
+          });
+        });
+      });
+    });
+  }
+
   // ---- actions ---------------------------------------------------------------
 
   function runProtection(target: 'on' | 'off'): void {
@@ -567,6 +1225,7 @@
     return [
       'Protection: ' + modeLabel(block),
       'Tier: ' + tierLabel(block.tier) + (block.tier === 'safe' ? ' (default)' : ''),
+      entriesLine(block),
       'Filter: ' + (block.filter === 'up' ? 'running' : 'not running'),
       'Firewall rules: ' + ruleLabel(block.rule),
       'Keeper: ' + (block.keeper === 'up' ? 'running' : 'not running'),
@@ -577,6 +1236,15 @@
       scriptsLine(block),
       probedLine(block)
     ].join('\n');
+  }
+
+  function entriesLine(block: TvStatus): string {
+    var api = listModule();
+    if (!api) {
+      return 'Blocked entries: ' + block.entries;
+    }
+    return 'Blocked entries: ' + block.entries + ' (this tier\'s preset has ' +
+      api.presetEntries()[block.tier] + ')';
   }
 
   function stateHeadline(state: ProtectState): string {
@@ -596,55 +1264,89 @@
   }
 
   // Shared refresh path. The busy flag is managed by the caller (or is already
-  // held); it is released when the status response arrives. `after` runs once
-  // the panel is rendered, inside the same callback.
-  function refreshStatusInternal(after: (() => void) | null): void {
-    if (!LgBlocklistBridge.available()) {
-      renderProtection('unknown');
-      show('Bridge unavailable', LgBlocklistBridge.diagnose());
-      finish();
+  // held); it is released when the status response arrives — unless `keepBusy`
+  // is set, in which case the completion callback owns the release (the domain
+  // list read that follows a refresh must not race a second command). `after`
+  // runs once the panel is rendered, inside the same callback.
+  function refreshStatusInternal(after: (() => void) | null, keepBusy?: boolean): void {
+    function done(): void {
+      if (!keepBusy) {
+        finish();
+      }
       if (after) {
         after();
       }
+    }
+    if (!LgBlocklistBridge.available()) {
+      lastBlock = null;
+      renderProtection('unknown');
+      renderDomains();
+      show('Bridge unavailable', LgBlocklistBridge.diagnose());
+      done();
       return;
     }
     show('Reading status...', 'Running the on-device check script through the Homebrew Channel bridge.');
     LgBlocklistBridge.runCheck(function (response: HbExecResponse): void {
-      finish();
       var raw = response.stdoutString || '';
       if (!response.returnValue) {
+        lastBlock = null;
         renderProtection('unknown');
         panel.textContent = 'Status: not readable — the check command failed.';
+        renderDomains();
         show('Status check failed', formatExec(response));
-        if (after) {
-          after();
-        }
+        done();
         return;
       }
       var block = LgStatus.parse(raw);
       if (!block) {
+        lastBlock = null;
         renderProtection('unknown');
         panel.textContent = 'Status: unreadable (malformed block) — reinstall the app.';
+        renderDomains();
         show('Status block rejected', 'Raw output (never parsed outside the block):\n' + rawPreview(raw));
+        done();
+        return;
+      }
+      lastBlock = block;
+      panel.textContent = statusPanel(block);
+      var state = protectState(block);
+      renderProtection(state);
+      renderTier(block.tier);
+      // The panel above is driven by the same block: the attention line and the
+      // apply/reset copy follow the protection mode that was just probed.
+      renderDomains();
+      show(stateHeadline(state), 'Raw status block:\n' + rawPreview(raw));
+      done();
+    });
+  }
+
+  /**
+   * Status + domain list, one guarded step. Every entry point that may have
+   * changed the TV's list (boot, refresh, apply, reset, tier switch) goes
+   * through here, so what the panel shows always comes from the TV and never
+   * from the command that was just run.
+   */
+  function refreshAllInternal(after: (() => void) | null): void {
+    refreshStatusInternal(function (): void {
+      if (!lastBlock) {
+        finish();
         if (after) {
           after();
         }
         return;
       }
-      panel.textContent = statusPanel(block);
-      var state = protectState(block);
-      renderProtection(state);
-      renderTier(block.tier);
-      show(stateHeadline(state), 'Raw status block:\n' + rawPreview(raw));
-      if (after) {
-        after();
-      }
-    });
+      loadDomainsInternal(function (): void {
+        finish();
+        if (after) {
+          after();
+        }
+      });
+    }, true);
   }
 
   function refreshStatus(): void {
     runGuarded(function (): void {
-      refreshStatusInternal(null);
+      refreshAllInternal(null);
     });
   }
 
@@ -668,27 +1370,39 @@
   el('btn-state').addEventListener('click', showHookState);
   el('btn-register').addEventListener('click', registerHook);
   el('btn-remove').addEventListener('click', removeHook);
+  // S6b T7: every domain change is staged in the panel; these two write it.
+  domainsApplyButton.addEventListener('click', applyDomainChanges);
+  domainsResetButton.addEventListener('click', openResetConfirm);
+  domainsConfirmButton.addEventListener('click', confirmReset);
+  domainsCancelButton.addEventListener('click', function (): void {
+    closeResetConfirm('Reset cancelled: the domains were left alone.');
+  });
 
   document.addEventListener('keydown', function (event: KeyboardEvent): void {
+    if (nav.length === 0) {
+      return;
+    }
     var key = event.key;
+    var index = currentFocusIndex();
     if (key === 'ArrowDown' || key === 'ArrowRight') {
-      focusIndex = (focusIndex + 1) % buttons.length;
-      buttons[focusIndex].focus();
+      setFocused(nav[(index + 1) % nav.length]);
       event.preventDefault();
     } else if (key === 'ArrowUp' || key === 'ArrowLeft') {
-      focusIndex = (focusIndex + buttons.length - 1) % buttons.length;
-      buttons[focusIndex].focus();
+      setFocused(nav[(index + nav.length - 1) % nav.length]);
       event.preventDefault();
     }
   });
 
-  focusIndex = 0;
-  buttons[0].focus();
+  rebuildNav();
+  if (nav.length > 0) {
+    setFocused(nav[0]);
+  }
 
   // The tier row starts in the unknown state (the same text index.html ships as
   // its pre-script fallback), so the app owns its initial render and never
   // inherits a tier claim from markup.
   renderTier(null);
+  renderDomains();
 
   // Review fix (S1): state the concrete reason when the bridge cannot work instead
   // of a bare "Bridge unavailable". webOS.* comes from the vendored webOSTV.js,

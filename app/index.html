@@ -28,6 +28,30 @@
   </section>
   <p id="status">Starting…</p>
   <div id="panel">Status: not checked yet.</div>
+  <!-- S6b T7: the domain list. The rows are built once from the committed
+       metadata module (js/domains.gen.js) and their on/off state comes from
+       `overrides.sh list` through the bridge — the panel never computes the
+       effective set itself. Toggles are staged here; only Apply writes (one
+       command, one restart), and Reset drops the whole diff. Every status line
+       is the app's own sentence: the OVERRIDES-REJECT token from a refused save
+       is mapped to fixed copy in js/domainlist.js, never rendered as text. -->
+  <section id="domains" class="domains" aria-labelledby="domains-heading">
+    <h2 id="domains-heading" class="domains-heading">Domains</h2>
+    <div id="domains-status" class="domains-status" role="status" aria-live="polite">Reading the domain list…</div>
+    <div class="domains-actions">
+      <button id="btn-domain-apply" class="domain-action">Apply changes</button>
+      <button id="btn-domain-reset" class="domain-action">Reset to preset</button>
+    </div>
+    <!-- Reset confirmation: it names the preset the TV would be restored to and
+         states whether the filter restarts. Focus moves here while it is open. -->
+    <div id="domains-confirm" class="domains-confirm" hidden>
+      <div id="domains-confirm-text" class="domains-confirm-text"></div>
+      <button id="btn-domain-reset-confirm" class="domain-action is-danger">Yes, reset domains</button>
+      <button id="btn-domain-reset-cancel" class="domain-action">Cancel</button>
+    </div>
+    <div id="domains-note" class="domains-note"></div>
+    <div id="domains-list" class="domains-list" hidden></div>
+  </section>
   <div class="buttons">
     <button id="btn-refresh">Refresh status</button>
     <button id="btn-check">Check bridge (root)</button>
@@ -43,6 +67,10 @@
   <script src="js/overrides.js"></script>
   <script src="js/bridge.js"></script>
   <script src="js/status.js"></script>
+  <!-- Domain metadata (generated from the shipped domain list) and the DOM-free
+       list-view decisions. Both are plain-script globals like the rest. -->
+  <script src="js/domains.gen.js"></script>
+  <script src="js/domainlist.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>
