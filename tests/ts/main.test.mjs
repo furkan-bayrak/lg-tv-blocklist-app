@@ -980,10 +980,17 @@ test('a row the map was not built for cannot hit Object.prototype (F6)', () => {
   const { elements, pending, context } = loadMain();
   resolveProbe(pending, STATUS_BLOCK);
   assert.ok(rowByName(elements, SAFE_ROW));
-  // A row name that exists on Object.prototype and has no entry in the row map:
-  // a prototype-carrying map would return Object.prototype.constructor (truthy)
-  // and the render would crash instead of skipping the unknown row. ('constructor'
-  // is also inside the app's own lowercase alphabet, unlike 'toString'.)
+  // A failed read drops the list state, so the next successful read re-creates
+  // the rows — but the DOM map is only ever built once. A row that arrives in
+  // that second read has no map entry, and its name is one that also exists on
+  // Object.prototype: with a prototype-carrying map the lookup returns
+  // Object.prototype.constructor (truthy), the `if (!parts)` guard is defeated
+  // and the render crashes instead of skipping the row. ('constructor' is inside
+  // the app's own lowercase alphabet, unlike 'toString'.)
+  elements['btn-refresh'].handlers.click();
+  resolve(pending, 'runCheck', { returnValue: true, stdoutString: STATUS_BLOCK });
+  resolve(pending, 'listOverrides', { returnValue: false, errorText: 'exit 3' });
+  assert.equal(elements['domains-list'].hidden, true);
   context.LgDomains.rows.push({
     name: 'constructor', tier: 'safe', category: 'other', zone: '', anchor: false, note: ''
   });
@@ -994,7 +1001,9 @@ test('a row the map was not built for cannot hit Object.prototype (F6)', () => {
     stdoutString: listFromRows(context.LgDomains, 'safe')
   });
   // Reaching this line without a throw is the assertion: the unknown row is
-  // skipped and the rows that have entries still render.
+  // skipped (it has no button) and the rows that do have entries still render.
   assert.equal(elements['domains-list'].hidden, false);
   assert.equal(rowByName(elements, SAFE_ROW).children[1].textContent, 'Blocked');
+  assert.equal(rowsOf(elements).length, DOMAINS.rows.length,
+    'the unknown row is skipped, not rendered from the prototype');
 });
