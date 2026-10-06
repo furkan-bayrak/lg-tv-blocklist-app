@@ -26,10 +26,15 @@
  *               exact rule would not change what the TV blocks. The row points
  *               at the zone row instead.
  *   - info    : the row is not part of the active preset at all. Under SAFE that
- *               is every STRICT-only row and every zone row: they are shown
- *               (with their note) but not switched — the SAFE list is the 20
- *               rows it ships. Under STRICT every non-anchor row is in the
- *               preset, so `info` cannot occur there.
+ *               is every STRICT-only row: it is shown (with its note) but not
+ *               switched — the SAFE list is the 20 rows it ships. Under STRICT
+ *               every non-anchor row is in the preset, so `info` cannot occur
+ *               there.
+ * A zone anchor row is a `toggle` in BOTH tiers (S6b T7 review F2): under STRICT
+ * switching it on blocks the whole subtree, under SAFE it adds only that name's
+ * exact apex rule (the SAFE preset ships no bare anchor) — the row's own note and
+ * the tier-aware zone warning say exactly which is which. Coverage stays a
+ * STRICT-only property, so a SAFE zone row never makes other rows `covered`.
  * Coverage is recomputed from the STAGED state, so turning a zone row off makes
  * the rows it covers individually manageable without another round trip.
  *
@@ -40,6 +45,8 @@
  * comparable. Exactly two thresholds exist, no more:
  *   entries === 0                     -> 'empty' : nothing is blocked right now.
  *   entries * 2 < presetEntries(tier) -> 'low'   : under half of the preset.
+ *   entries not a finite, >= 0 number -> 'unknown': the count could not be read,
+ *                                       so it is never reported as healthy.
  * Anything else is 'ok'. A one-entry list is a legitimate debug state and stays
  * a visible warning, never a refusal (the writers accept it by design).
  *
@@ -58,7 +65,7 @@
 
 type LgDomainTier = 'safe' | 'strict';
 type LgDomainControl = 'toggle' | 'covered' | 'info';
-type LgDomainAttention = 'ok' | 'low' | 'empty';
+type LgDomainAttention = 'ok' | 'low' | 'empty' | 'unknown';
 
 interface LgDomainRowView {
   name: string;
@@ -203,10 +210,12 @@ var LgDomainList: LgDomainListApi = (function (): LgDomainListApi {
 
   function controlFor(tier: LgDomainTier, row: LgDomainRowView, covered: boolean): LgDomainControl {
     if (row.anchor) {
-      // A zone row is a zone-level switch (whole subtree under STRICT), never a
-      // per-domain one. Under SAFE no preset anchor exists, so the row is shown
-      // as inactive information instead of a switch.
-      return tier === 'strict' ? 'toggle' : 'info';
+      // S6b T7 review F2: a zone row is a switch in BOTH tiers. Under STRICT the
+      // preset ships the anchor as a bare whole-subtree entry; under SAFE it
+      // ships no bare anchor, so switching this row on adds only the exact apex
+      // rule (the row's own note states the same split). Its reported state is
+      // rendered as what it is, never as "not in this tier".
+      return 'toggle';
     }
     if (covered) {
       return 'covered';
@@ -366,8 +375,11 @@ var LgDomainList: LgDomainListApi = (function (): LgDomainListApi {
         'have no row of their own. Turning it off stops that whole-zone block; domains listed ' +
         'under it stay blocked by their own rows.';
     }
-    return 'Zone row: the SAFE list blocks no whole zones, so this row is inactive here. Under ' +
-      'STRICT it blocks the whole ' + name + ' subtree. Switch to STRICT to use it.';
+    // Same split the committed row note states: under SAFE the row is a real
+    // switch, but it buys only the exact apex rule (S6b T7 review F2).
+    return 'Zone row: under SAFE this row blocks only ' + name + ' itself, not its subdomains. ' +
+      'Under STRICT the same row blocks the whole ' + name + ' subtree. Turning it off stops ' +
+      'that one rule; domains listed under it stay blocked by their own rows.';
   }
 
   function rowDetail(tier: LgDomainTier, row: LgDomainRowView): string {
@@ -391,11 +403,13 @@ var LgDomainList: LgDomainListApi = (function (): LgDomainListApi {
   /**
    * Attention level for the TV's reported entry count. Two thresholds, no more:
    * an empty list is the strongest state, and a list below half of the active
-   * tier's preset gets the milder notice. Both are display-only.
+   * tier's preset gets the milder notice. Both are display-only. A count the app
+   * cannot read is 'unknown', never 'ok' (S6b T7 review F5): the caller must not
+   * be able to render a confident healthy state from an unreadable number.
    */
   function attention(entries: number, tier: LgDomainTier): LgDomainAttention {
     if (typeof entries !== 'number' || !isFinite(entries) || entries < 0) {
-      return 'ok';
+      return 'unknown';
     }
     if (entries === 0) {
       return 'empty';
@@ -406,6 +420,11 @@ var LgDomainList: LgDomainListApi = (function (): LgDomainListApi {
 
   function attentionMessage(level: LgDomainAttention, tier: LgDomainTier, entries: number): string {
     var preset = tier === 'strict' ? presetEntries().strict : presetEntries().safe;
+    if (level === 'unknown') {
+      return 'The TV\'s blocked-entry count could not be read as a number, so this app cannot ' +
+        'tell how much is blocked. Press "Refresh status" to try again — reinstall the app if ' +
+        'this keeps happening.';
+    }
     if (level === 'empty') {
       return 'Nothing is blocked right now: the TV reports 0 blocked entries. Apply your staged ' +
         'changes, or press Reset to preset.';

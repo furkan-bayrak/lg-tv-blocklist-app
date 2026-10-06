@@ -108,10 +108,19 @@
   // list has been read at least once; the list is never rendered from a guess.
   var domainState: LgDomainState | null = null;
   var domainsBuilt = false;
-  var rowParts: { [name: string]: LgDomainRowEls } = {};
+  // No prototype chain, like every other name-keyed map in this feature: an
+  // unknown row name can never resolve to an Object.prototype member and be
+  // mistaken for a built row (S6b T7 review F6).
+  var rowParts: { [name: string]: LgDomainRowEls } = Object.create(null) as {
+    [name: string]: LgDomainRowEls;
+  };
   var rowOrder: string[] = [];
   var domainMessage = '';
   var domainMessageKind = ''; // '' | 'is-ok' | 'is-error'
+  // True only when the last full refresh re-read AND parsed the list. The
+  // post-save callbacks use it to keep the honest diagnosis the refresh put on
+  // screen instead of replacing it with a confirmation (S6b T7 review F3).
+  var listFresh = false;
   var confirmOpen = false;
 
   function show(statusText: string, bodyText: string): void {
@@ -163,7 +172,8 @@
 
   // The focusable controls in visual order. Rebuilt from parts (never mutated in
   // place) so a hidden control — the Apply/Reset pair while the reset
-  // confirmation is open — can never be focused by an arrow key.
+  // confirmation is open, or the domain rows while the list is hidden — can
+  // never be reached by an arrow key.
   function rebuildNav(): void {
     var next: HTMLElement[] = [protectButton, tierSafeButton, tierStrictButton];
     if (confirmOpen) {
@@ -171,8 +181,16 @@
     } else {
       next.push(domainsApplyButton, domainsResetButton);
     }
-    for (var i = 0; i < rowOrder.length; i++) {
-      next.push(rowParts[rowOrder[i]].button);
+    // S6b T7 review F1: the list's own visibility decides whether its rows are
+    // in the order. In a spec-compliant webview `focus()` on a node inside
+    // `[hidden]{display:none!important}` is a no-op, so a row kept in the order
+    // would swallow an arrow key and put the controls below the list out of
+    // reach. renderDomains() rebuilds this whenever the list is hidden or shown
+    // again.
+    if (!domainsList.hidden) {
+      for (var i = 0; i < rowOrder.length; i++) {
+        next.push(rowParts[rowOrder[i]].button);
+      }
     }
     next.push(el('btn-refresh'), el('btn-check'), el('btn-state'), el('btn-register'), el('btn-remove'));
     nav = next;
@@ -546,15 +564,24 @@
     return LgDomainList.available() ? LgDomainList : null;
   }
 
+  // S6b T7 review F5: an entry count the app cannot check is never healthy. With
+  // a damaged package (metadata module missing) the count cannot be compared to
+  // any preset, so the state degrades to 'unknown' and the card renders its
+  // amber "cannot tell" form — never a confident green ON.
   function entriesAttention(block: TvStatus): LgDomainAttention {
     var api = listModule();
-    return api ? api.attention(block.entries, block.tier) : 'ok';
+    if (!api) {
+      return 'unknown';
+    }
+    return api.attention(block.entries, block.tier);
   }
 
   function entriesAttentionNote(block: TvStatus): string {
     var api = listModule();
     if (!api) {
-      return '';
+      return 'Protection is on, but the bundled domain list is missing, so this app cannot check ' +
+        'how many entries are blocked. Reinstall the app, then press "Refresh status" to ' +
+        'confirm.';
     }
     return api.attentionMessage(api.attention(block.entries, block.tier), block.tier, block.entries);
   }
@@ -687,7 +714,7 @@
     }
     if (domainState && lastBlock) {
       var level = entriesAttention(lastBlock);
-      if (level === 'empty') {
+      if (level === 'empty' || level === 'unknown') {
         return ' is-attention';
       }
       if (level === 'low') {
@@ -712,6 +739,15 @@
 
   function renderDomains(): void {
     var api = listModule();
+    // S6b T7 review F1: the arrow-key order always matches what is on screen.
+    // The rows exist as controls only while the list is visible, so hiding it
+    // (no readable list) drops them from the order in the same step, and showing
+    // it again puts them back.
+    var listHidden = api === null || domainState === null;
+    if (domainsList.hidden !== listHidden) {
+      domainsList.hidden = listHidden;
+      rebuildNav();
+    }
     if (!api) {
       domainsStatus.textContent =
         'The bundled domain list is missing — the installed package looks incomplete. Reinstall ' +
@@ -720,7 +756,6 @@
       domainsNote.textContent = '';
       return;
     }
-    domainsList.hidden = domainState === null;
     domainsStatus.textContent = domainStatusText(api);
     domainsStatus.className = 'domains-status' + domainStatusClass();
     domainsNote.textContent = domainNoteText();
@@ -774,6 +809,7 @@
    * cannot be parsed clears the rows (an explicit error, never stale state).
    */
   function loadDomainsInternal(after: () => void): void {
+    listFresh = false;
     var api = listModule();
     if (!api) {
       domainState = null;
@@ -825,6 +861,7 @@
         domainState = api.create(block.tier, states);
         buildDomainRows(api);
       }
+      listFresh = true;
       renderAllDomainRows();
       renderDomains();
       after();
@@ -833,7 +870,21 @@
 
   // ---- writing the list ------------------------------------------------------
 
+  // S6b T7 review F4: a `returnValue: false` with no stdout/stderr has several
+  // different histories. The bridge tags the LOCAL refusals (js/overrides.js
+  // missing, or the serializer refusing the payload), so each gets the accurate
+  // cause; only an untagged failure is the Homebrew Channel bridge's own. The
+  // bridge's own text is never rendered — the raw pane below keeps the detail.
   function refusalFallback(response: HbExecResponse): string {
+    if (response.localRefusal === 'module-missing') {
+      return 'The app could not check the domain changes: its bundled validator (js/overrides.js) ' +
+        'is not loaded, so the installed package looks incomplete. Nothing was sent — reinstall ' +
+        'the app.';
+    }
+    if (response.localRefusal === 'validation') {
+      return 'The app refused the domain changes before sending them, so nothing was modified. ' +
+        'They did not pass the app\'s own safety check — reinstall the app if this keeps happening.';
+    }
     if (response.errorText && !response.stdoutString && !response.stderrString) {
       return 'The TV did not run the command, so the domain list was not modified. Check the ' +
         'Homebrew Channel bridge with "Check bridge".';
@@ -941,6 +992,12 @@
         if (!protectionOn) {
           // Protection is off: persist and re-list, no restart (owner decision).
           refreshAllInternal(function (): void {
+            // S6b T7 review F3: a re-list that failed already put the honest
+            // diagnosis on screen — never replace it with a confirmation that
+            // the TV reported nothing back.
+            if (!listFresh) {
+              return;
+            }
             var match = stagedMatchesReported(api);
             setDomainMessage(match
               ? 'Changes saved. Protection is off, so nothing was restarted — they take effect ' +
@@ -957,6 +1014,11 @@
         LgBlocklistBridge.runApply(function (applyResponse: HbExecResponse): void {
           var outcome = domainApplyOutcome(api, applyResponse);
           refreshAllInternal(function (): void {
+            // S6b T7 review F3: keep the honest re-list diagnosis (and never a
+            // success claim) when the re-list failed.
+            if (!listFresh) {
+              return;
+            }
             var match = stagedMatchesReported(api);
             setDomainMessage(match ? outcome.message :
               'The TV did not report the staged domains back, so the list may not match what you staged.',
@@ -1072,6 +1134,11 @@
         }
         if (!protectionOn) {
           refreshAllInternal(function (): void {
+            // S6b T7 review F3: never show the reset-success copy when the
+            // re-list that would confirm it failed.
+            if (!listFresh) {
+              return;
+            }
             renderDomains();
             setDomainMessage('Domains reset to the ' + resetTargetLabel() + ' preset. Protection ' +
               'is off, so nothing was restarted — the preset is used next time protection is ' +
@@ -1084,6 +1151,11 @@
         LgBlocklistBridge.runApply(function (applyResponse: HbExecResponse): void {
           var outcome = domainApplyOutcome(api, applyResponse);
           refreshAllInternal(function (): void {
+            // S6b T7 review F3: same rule after the restart — a failed re-list
+            // keeps its diagnosis and no success copy is shown.
+            if (!listFresh) {
+              return;
+            }
             renderDomains();
             setDomainMessage(outcome.ok
               ? 'Domains reset to the ' + resetTargetLabel() + ' preset; protection is on.'
@@ -1329,6 +1401,8 @@
   function refreshAllInternal(after: (() => void) | null): void {
     refreshStatusInternal(function (): void {
       if (!lastBlock) {
+        // The status probe itself failed: no list was re-read either.
+        listFresh = false;
         finish();
         if (after) {
           after();

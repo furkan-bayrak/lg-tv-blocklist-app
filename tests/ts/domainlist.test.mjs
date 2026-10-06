@@ -104,19 +104,34 @@ test('the row set is the module\'s, in module order, joined 1:1 with the list', 
   assert.deepEqual(api.presetEntries(), domains.presetEntries);
 });
 
-test('SAFE: safe rows toggle, STRICT-only rows and zone rows are informational', () => {
+test('SAFE: safe rows and zone rows toggle, STRICT-only rows are informational', () => {
   const s = state('safe');
   assert.equal(controlOf(s, SAFE_ROW), 'toggle');
   assert.equal(controlOf(s, STRICT_ROW), 'info');
-  assert.equal(controlOf(s, ZONE_ROW), 'info');
+  // F2: a zone anchor is a switch in BOTH tiers. The SAFE preset ships no bare
+  // anchor, so the pristine row reads off and forcing it on stages `+name` — the
+  // exact apex rule that is all the SAFE list can deliver for a zone.
+  assert.equal(controlOf(s, ZONE_ROW), 'toggle');
+  assert.equal(s.api.row(s.state, ZONE_ROW).on, false, 'SAFE ships no bare anchor');
+  assert.equal(s.api.toggle(s.state, ZONE_ROW), true);
+  assert.deepEqual(changesOf(s.api, s.state), [ZONE_ROW + '=on']);
+  // An anchor that is on under SAFE is Blocked, not "not in this tier": the
+  // label must agree with the effective state (F2).
+  assert.equal(s.api.stateLabel(s.api.row(s.state, ZONE_ROW)), 'Blocked');
   // A SAFE row that a zone would cover under STRICT stays switchable under SAFE:
-  // the SAFE preset ships no bare anchors, so nothing covers it there.
+  // the SAFE preset ships no bare anchors, so nothing covers it there — even
+  // while a zone row is staged on (coverage is a STRICT-only property).
   assert.equal(controlOf(s, COVERED_ROW), 'toggle');
+  assert.equal(s.api.row(s.state, COVERED_ROW).coveredBy, '');
   // The informational rows explain why, in the app's own words.
   assert.ok(s.api.rowDetail('safe', s.api.row(s.state, STRICT_ROW)).includes('STRICT'));
+  // The zone warning is tier-aware and states what SAFE actually buys: the apex
+  // alone, the same split the committed row note makes (F2).
   const zoneDetail = s.api.rowDetail('safe', s.api.row(s.state, ZONE_ROW));
   assert.ok(zoneDetail.includes('SAFE'), 'tier-aware zone warning');
   assert.ok(zoneDetail.includes(ZONE_ROW), 'and it names the row\'s own name');
+  assert.ok(zoneDetail.includes('only ' + ZONE_ROW), 'and states the SAFE blast radius: ' + zoneDetail);
+  assert.equal(zoneDetail, s.api.zoneWarning('safe', ZONE_ROW));
 });
 
 test('STRICT: covered rows point at the zone, anchors are zone-level switches', () => {
@@ -159,9 +174,11 @@ test('staged toggles build a sparse diff of only the changed rows', () => {
   next[SAFE_ROW_2] = false;
   s.api.applyList(s.state, next);
   assert.deepEqual(changesOf(s.api, s.state), []);
-  // Unknown names and non-toggleable rows are no-ops.
+  // Unknown names and rows the active tier cannot switch are no-ops (F2: a zone
+  // row IS switchable under SAFE, so the non-switchable case is a STRICT-only
+  // row here).
   assert.equal(s.api.toggle(s.state, 'not-a-domain.example'), false);
-  assert.equal(s.api.toggle(s.state, ZONE_ROW), false);
+  assert.equal(s.api.toggle(s.state, STRICT_ROW), false);
   assert.deepEqual(changesOf(s.api, s.state), []);
 });
 
@@ -200,7 +217,7 @@ test('tier changes re-derive coverage from the newly reported states', () => {
   const s = state('safe');
   assert.equal(s.state.tier, 'safe');
   assert.equal(controlOf(s, COVERED_ROW), 'toggle');
-  assert.equal(controlOf(s, ZONE_ROW), 'info');
+  assert.equal(controlOf(s, ZONE_ROW), 'toggle');
   // The switch is always followed by a fresh list (main.js re-reads it): the
   // same rows then join against the STRICT preset, where the anchor is on.
   s.api.setTier(s.state, 'strict');
@@ -234,9 +251,18 @@ test('attention: zero entries is the strongest state, below half is a notice', (
   const low = api.attentionMessage('low', 'strict', 5);
   assert.ok(low.includes('5') && low.includes('123') && low.includes('STRICT'));
   assert.equal(api.attentionMessage('ok', 'strict', 123), '');
-  // Nonsense counts never invent an alarm.
-  assert.equal(api.attention(-1, 'safe'), 'ok');
-  assert.equal(api.attention(NaN, 'safe'), 'ok');
+  // An unreadable count is never healthy (F5): 'unknown' (which the caller
+  // renders as a visible degraded state), never a confident 'ok'.
+  assert.equal(api.attention(-1, 'safe'), 'unknown');
+  assert.equal(api.attention(NaN, 'safe'), 'unknown');
+  assert.equal(api.attention(Infinity, 'strict'), 'unknown');
+  assert.equal(api.attention(-0.5, 'safe'), 'unknown');
+  assert.equal(api.attention(undefined, 'safe'), 'unknown');
+  assert.equal(api.attention('12', 'safe'), 'unknown');
+  const unknown = api.attentionMessage('unknown', 'safe', NaN);
+  assert.notEqual(unknown, '');
+  assert.ok(unknown.includes('Refresh status'), unknown);
+  assert.ok(!unknown.includes('Nothing is blocked'), 'an unknown count makes no claim: ' + unknown);
 });
 
 test('every refusal reason gets its own sentence — never the script\'s text', () => {

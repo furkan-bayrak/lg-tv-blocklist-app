@@ -57,6 +57,13 @@ interface HbExecResponse {
   stdoutString?: string;
   stderrString?: string;
   errorText?: string;
+  // Set ONLY by a wrapper that refused before sending anything (saveOverrides'
+  // local validation). It lets the UI name the real cause — the missing
+  // validator or the local safety check — instead of blaming the Homebrew
+  // Channel bridge, which never saw the command (S6b T7 review F4). The value
+  // is a fixed word, never text to render: `errorText` stays the untrusted
+  // detail for the raw output pane.
+  localRefusal?: 'module-missing' | 'validation';
 }
 
 interface HbConfiguration {
@@ -289,6 +296,7 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
     if (typeof LgOverrides === 'undefined' || !LgOverrides) {
       onDone({
         returnValue: false,
+        localRefusal: 'module-missing',
         errorText: 'The domain changes were not sent: the js/overrides.js module is not loaded, ' +
           'so nothing could be validated. The installed package looks incomplete - reinstall it.'
       });
@@ -298,6 +306,7 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
     if (!result.ok || !LgOverrides.isSafePayload(result.payload)) {
       onDone({
         returnValue: false,
+        localRefusal: 'validation',
         errorText: 'The domain changes were not sent: ' +
           (result.detail === '' ? 'the payload did not pass the local safety check.' : result.detail + '.')
       });

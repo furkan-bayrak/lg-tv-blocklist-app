@@ -116,11 +116,18 @@ function listWith(tier, flipped) {
   return lines.join('\n') + '\n';
 }
 
+/** The same list as presetList(), built from a (possibly extended) row set. */
+function listFromRows(domains, tier) {
+  return domains.rows
+    .map((row) => row.name + '=' + ((tier === 'strict' ? true : row.tier === 'safe') ? 'on' : 'off'))
+    .join('\n') + '\n';
+}
+
 function tierOf(block) {
   return block.indexOf('tier=strict') !== -1 ? 'strict' : 'safe';
 }
 
-function loadMain() {
+function loadMain(options = {}) {
   const elements = {};
   const doc = {
     activeElement: null,
@@ -199,11 +206,15 @@ function loadMain() {
     LgBlocklistBridge: bridge
   };
   vm.createContext(context);
-  vm.runInContext(domainsGenJs, context);
-  vm.runInContext(domainListJs, context);
+  // A damaged package (no metadata module and no DOM-free list module) is a
+  // realistic failure mode and is what the fail-closed test loads (F5).
+  if (options.withDomainList !== false) {
+    vm.runInContext(domainsGenJs, context);
+    vm.runInContext(domainListJs, context);
+  }
   vm.runInContext(statusJs, context);
   vm.runInContext(mainJs, context);
-  return { elements, calls, pending, doc, saved, cleared };
+  return { elements, calls, pending, doc, saved, cleared, context };
 }
 
 function resolve(pending, name, response) {
@@ -445,16 +456,21 @@ test('the panel joins the script\'s list with the metadata: one row per domain',
   assert.ok(groups.length > 1);
   assert.equal(groups[0].children[0].className, 'domain-group-title');
   assert.equal(groups[0].children[0].textContent, 'ACR (viewing data)');
-  // The zone row explains itself against the ACTIVE tier: under SAFE it says the
-  // SAFE list blocks no whole zones, and it names the row's own name.
+  // The zone row explains itself against the ACTIVE tier: under SAFE it says
+  // what this row buys there (the apex alone, not the subtree). F2: a zone row
+  // is a switch in both tiers, and an anchor the SAFE list reports on is
+  // "Blocked", never "not in this tier".
   const zone = rowByName(elements, ZONE_ROW);
   assert.ok(zone.className.includes('is-zone'));
+  assert.ok(zone.className.includes('is-toggle'));
   assert.ok(zone.children[2].textContent.includes('SAFE'));
   assert.ok(zone.children[2].textContent.includes(ZONE_ROW));
-  // Under SAFE the SAFE preset ships no bare anchors, so the zone row is not a
-  // switch either — it explains what it would do under STRICT.
-  assert.equal(zone.attrs['aria-disabled'], 'true');
-  assert.ok(zone.children[1].textContent.includes('not in this tier'));
+  assert.ok(zone.children[2].textContent.includes('only ' + ZONE_ROW),
+    'the SAFE blast radius is stated: ' + zone.children[2].textContent);
+  assert.equal(zone.attrs['aria-disabled'], 'false');
+  assert.equal(zone.children[1].textContent, 'Allowed',
+    'the SAFE preset ships no bare anchor, so a pristine zone row is off');
+  assert.equal(zone.attrs['aria-pressed'], 'false');
 });
 
 test('a toggle is staged, never sent: the diff is written by Apply alone', () => {
@@ -773,4 +789,212 @@ test('arrow keys walk the rows in order and follow the open confirmation', () =>
     }
   }
   assert.ok(reachedApply, 'the action bar is in the nav');
+});
+
+// --- S6b T7 review fixes ------------------------------------------------
+
+test('arrow keys skip the rows while the list is hidden, and return with it (F1)', () => {
+  const { elements, pending, doc } = loadMain();
+  const keydown = doc.handlers.keydown;
+  resolveProbe(pending, STATUS_BLOCK);
+  const row = rowByName(elements, SAFE_ROW);
+  // Positive control: while the list is visible the rows are in the order.
+  let seenRow = false;
+  for (let i = 0; i < DOMAINS.rows.length + 12 && !seenRow; i++) {
+    keydown({ key: 'ArrowDown', preventDefault() {} });
+    seenRow = doc.activeElement === row;
+  }
+  assert.ok(seenRow, 'a visible row is reachable');
+  // The re-list fails and the list is hidden. Focus on a node inside
+  // `[hidden]{display:none!important}` is a no-op in a spec-compliant webview, so
+  // the rows must leave the order in the same step — otherwise an arrow key
+  // targets an unfocusable row and the controls below the list are stranded.
+  elements['btn-refresh'].handlers.click();
+  resolve(pending, 'runCheck', { returnValue: true, stdoutString: STATUS_BLOCK });
+  resolve(pending, 'listOverrides', { returnValue: false, errorText: 'exit 3' });
+  assert.equal(elements['domains-list'].hidden, true);
+  const visited = [];
+  for (let i = 0; i < DOMAINS.rows.length + 12; i++) {
+    keydown({ key: 'ArrowDown', preventDefault() {} });
+    visited.push(doc.activeElement);
+  }
+  for (const node of visited) {
+    assert.equal(node.attrs['data-name'], undefined,
+      'a hidden row is not in the arrow-key order: ' + node.attrs['data-name']);
+  }
+  assert.ok(visited.includes(elements['btn-refresh']), 'the controls below the list stay reachable');
+  assert.ok(visited.includes(elements['btn-remove']));
+  // The list is read again → its rows are back in the order.
+  elements['btn-refresh'].handlers.click();
+  resolve(pending, 'runCheck', { returnValue: true, stdoutString: STATUS_BLOCK });
+  resolve(pending, 'listOverrides', { returnValue: true, stdoutString: presetList('safe') });
+  assert.equal(elements['domains-list'].hidden, false);
+  let back = false;
+  for (let i = 0; i < DOMAINS.rows.length + 12 && !back; i++) {
+    keydown({ key: 'ArrowDown', preventDefault() {} });
+    back = doc.activeElement === row;
+  }
+  assert.ok(back, 'the rows rejoin the order once the list is visible again');
+});
+
+test('a zone row is switchable under SAFE and says what that buys (F2)', () => {
+  const { elements, calls, pending } = loadMain();
+  resolveProbe(pending, STATUS_BLOCK);
+  const zone = rowByName(elements, ZONE_ROW);
+  assert.equal(zone.attrs['aria-disabled'], 'false');
+  assert.ok(zone.className.includes('is-toggle'));
+  assert.ok(zone.className.includes('is-off'), 'the SAFE preset ships no bare anchor');
+  zone.handlers.click();
+  assert.equal(count(calls, 'saveOverrides'), 0, 'staged, never sent');
+  const staged = rowByName(elements, ZONE_ROW);
+  assert.ok(staged.className.includes('is-on') && staged.className.includes('is-changed'));
+  assert.equal(staged.children[1].textContent, 'Blocked — staged',
+    'an anchor on under SAFE is Blocked, never "not in this tier"');
+  assert.ok(elements['domains-status'].textContent.includes('1 unsaved change'));
+  // Coverage stays STRICT-only: the rows the zone would cover under STRICT remain
+  // individually switchable here.
+  const covered = rowByName(elements, COVERED_ROW);
+  assert.equal(covered.className.indexOf('is-covered'), -1);
+  assert.ok(covered.className.includes('is-toggle'));
+});
+
+test('a failed re-list after Apply keeps the honest diagnosis, never a confirmation (F3)', () => {
+  const { elements, pending } = loadMain();
+  resolveProbe(pending, STATUS_BLOCK);
+  rowByName(elements, SAFE_ROW).handlers.click();
+  elements['btn-domain-apply'].handlers.click();
+  resolve(pending, 'saveOverrides', {
+    returnValue: true,
+    stdoutString: 'RESULT=overrides\nreason=saved'
+  });
+  // The save was accepted, but the re-list that would confirm it fails.
+  resolve(pending, 'runCheck', { returnValue: true, stdoutString: STATUS_BLOCK });
+  resolve(pending, 'listOverrides', { returnValue: false, errorText: 'exit 3' });
+  const text = elements['domains-status'].textContent;
+  assert.ok(text.includes('did not return a readable domain list'), text);
+  assert.ok(!text.includes('did not report the staged domains back'), 'the accurate diagnosis survives');
+  assert.ok(!text.includes('Changes saved'), 'no success copy on a failed re-list: ' + text);
+  assert.equal(elements['domains-status'].className, 'domains-status is-error');
+  assert.equal(elements['status'].textContent, 'Domain list not readable');
+});
+
+test('a failed re-list after Reset never shows the reset-success copy (F3)', () => {
+  const { elements, pending } = loadMain();
+  resolveProbe(pending, STATUS_BLOCK);
+  elements['btn-domain-reset'].handlers.click();
+  elements['btn-domain-reset-confirm'].handlers.click();
+  resolve(pending, 'clearOverrides', {
+    returnValue: true,
+    stdoutString: 'RESULT=overrides\nreason=cleared'
+  });
+  resolve(pending, 'runCheck', { returnValue: true, stdoutString: STATUS_BLOCK });
+  resolve(pending, 'listOverrides', {
+    returnValue: true,
+    stdoutString: presetList('safe').split('\n').slice(2).join('\n')
+  });
+  const text = elements['domains-status'].textContent;
+  assert.ok(text.includes('did not return a readable domain list'), text);
+  assert.ok(!text.includes('Domains reset to the'), 'no reset-success claim on a failed re-list: ' + text);
+  assert.equal(elements['status'].textContent, 'Domain list not readable');
+  // Same when the status probe the re-list depends on fails: the probe's own
+  // diagnosis stays and no success copy is produced.
+  const probeFail = loadMain();
+  resolveProbe(probeFail.pending, STATUS_BLOCK);
+  probeFail.elements['btn-domain-reset'].handlers.click();
+  probeFail.elements['btn-domain-reset-confirm'].handlers.click();
+  resolve(probeFail.pending, 'clearOverrides', {
+    returnValue: true,
+    stdoutString: 'RESULT=overrides\nreason=cleared'
+  });
+  resolve(probeFail.pending, 'runCheck', { returnValue: false, errorText: 'exit 5' });
+  assert.equal(probeFail.elements['status'].textContent, 'Status check failed');
+  assert.ok(!probeFail.elements['domains-status'].textContent.includes('Domains reset to the'),
+    'no success copy when the probe failed: ' + probeFail.elements['domains-status'].textContent);
+});
+
+test('a locally refused save names the app-side cause, not the HBC bridge (F4)', () => {
+  function refuse(response) {
+    const app = loadMain();
+    resolveProbe(app.pending, STATUS_BLOCK_ON);
+    rowByName(app.elements, SAFE_ROW).handlers.click();
+    app.elements['btn-domain-apply'].handlers.click();
+    resolve(app.pending, 'saveOverrides', response);
+    return app;
+  }
+  // The package is missing its bundled validator: nothing was even assembled.
+  const missing = refuse({
+    returnValue: false,
+    localRefusal: 'module-missing',
+    errorText: 'The domain changes were not sent: the js/overrides.js module is not loaded'
+  });
+  let message = missing.elements['domains-status'].textContent;
+  assert.ok(message.includes('js/overrides.js'), message);
+  assert.ok(message.includes('reinstall'), message);
+  assert.ok(!message.includes('Homebrew Channel'), 'the bridge is not to blame: ' + message);
+  assert.ok(!message.includes('were not sent:'), 'the bridge detail is never rendered verbatim');
+  assert.equal(missing.elements['status'].textContent, 'Domain changes not saved');
+  assert.ok(missing.elements['output'].textContent.includes('js/overrides.js'),
+    'the raw output pane keeps the detail');
+  // The serializer refused the payload locally.
+  const invalid = refuse({
+    returnValue: false,
+    localRefusal: 'validation',
+    errorText: 'zzz.example is not in this app\'s domain list.'
+  });
+  message = invalid.elements['domains-status'].textContent;
+  assert.ok(message.includes('safety check'), message);
+  assert.ok(!message.includes('Homebrew Channel'), message);
+  assert.ok(!message.includes('zzz.example'), 'the serializer detail is not rendered');
+  // An untagged transport failure is the only case that points at the bridge.
+  const down = refuse({ returnValue: false, errorText: 'exit 9' });
+  message = down.elements['domains-status'].textContent;
+  assert.ok(message.includes('Homebrew Channel bridge'), message);
+  assert.ok(!message.includes('exit 9'));
+});
+
+test('a damaged package cannot render a confident green ON (F5)', () => {
+  const damaged = loadMain({ withDomainList: false });
+  resolve(damaged.pending, 'runCheck', { returnValue: true, stdoutString: STATUS_BLOCK_ON });
+  assert.equal(damaged.elements['protection'].className, 'protection is-attention');
+  assert.equal(damaged.elements['status'].textContent, 'Status: needs attention');
+  const note = damaged.elements['prot-text'].textContent;
+  assert.ok(note.includes('cannot check'), note);
+  assert.ok(!note.includes('Protection is off'), 'a mode=on filter is never reported as off: ' + note);
+  assert.equal(damaged.elements['btn-protect'].textContent, 'Turn off protection');
+  assert.ok(damaged.elements['domains-status'].textContent.includes('bundled domain list is missing'));
+  // mode=on with entries=0 must not slip through either.
+  const zero = loadMain({ withDomainList: false });
+  resolve(zero.pending, 'runCheck', {
+    returnValue: true,
+    stdoutString: STATUS_BLOCK_ON.replace('entries=20', 'entries=0')
+  });
+  assert.equal(zero.elements['protection'].className, 'protection is-attention');
+  // Positive control: with the module present the same block is a healthy green.
+  const healthy = loadMain();
+  resolveProbe(healthy.pending, STATUS_BLOCK_ON);
+  assert.equal(healthy.elements['protection'].className, 'protection is-on');
+  assert.equal(healthy.elements['status'].textContent, 'Status: protection ON');
+});
+
+test('a row the map was not built for cannot hit Object.prototype (F6)', () => {
+  const { elements, pending, context } = loadMain();
+  resolveProbe(pending, STATUS_BLOCK);
+  assert.ok(rowByName(elements, SAFE_ROW));
+  // A row name that exists on Object.prototype and has no entry in the row map:
+  // a prototype-carrying map would return Object.prototype.constructor (truthy)
+  // and the render would crash instead of skipping the unknown row. ('constructor'
+  // is also inside the app's own lowercase alphabet, unlike 'toString'.)
+  context.LgDomains.rows.push({
+    name: 'constructor', tier: 'safe', category: 'other', zone: '', anchor: false, note: ''
+  });
+  elements['btn-refresh'].handlers.click();
+  resolve(pending, 'runCheck', { returnValue: true, stdoutString: STATUS_BLOCK });
+  resolve(pending, 'listOverrides', {
+    returnValue: true,
+    stdoutString: listFromRows(context.LgDomains, 'safe')
+  });
+  // Reaching this line without a throw is the assertion: the unknown row is
+  // skipped and the rows that have entries still render.
+  assert.equal(elements['domains-list'].hidden, false);
+  assert.equal(rowByName(elements, SAFE_ROW).children[1].textContent, 'Blocked');
 });

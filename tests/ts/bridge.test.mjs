@@ -271,6 +271,9 @@ test('a caller cannot smuggle anything into the save command: refused payloads a
     assert.equal(seen[0].returnValue, false);
     assert.equal(typeof seen[0].errorText, 'string');
     assert.equal(seen[0].errorText.length > 0, true);
+    // F4: the refusal is tagged as a LOCAL one, so the UI names the app's own
+    // safety check instead of blaming the Homebrew Channel bridge.
+    assert.equal(seen[0].localRefusal, 'validation');
   }
 });
 
@@ -281,6 +284,7 @@ test('an unknown-domain name is refused locally, so the writer never sees it', (
   assert.equal(calls.length, 0);
   assert.equal(seen[0].returnValue, false);
   assert.match(seen[0].errorText, /domain list/);
+  assert.equal(seen[0].localRefusal, 'validation', 'refused locally, never sent');
 });
 
 test('clear/list work without js/overrides.js; save refuses with an honest message', () => {
@@ -296,6 +300,7 @@ test('clear/list work without js/overrides.js; save refuses with an honest messa
   assert.equal(calls.length, 2, 'save must not send anything without the validator');
   assert.equal(seen[0].returnValue, false);
   assert.match(seen[0].errorText, /overrides\.js/);
+  assert.equal(seen[0].localRefusal, 'module-missing', 'F4: the real cause is the missing module');
 });
 
 test('the save/clear/list verbs are exactly the verbs overrides.sh accepts', () => {
