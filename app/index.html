@@ -52,6 +52,53 @@
     <div id="domains-note" class="domains-note"></div>
     <div id="domains-list" class="domains-list" hidden></div>
   </section>
+  <!-- S6b T8: always-reachable help copy. Static markup so the SAFE/STRICT
+       effects, the self-debug purpose of the domain list, the firmware scope,
+       and the list attribution are readable without switching tiers. Kept in
+       sync with the "Tiers and the domain list" section in README.md. -->
+  <section id="help" class="help" aria-labelledby="help-heading">
+    <h2 id="help-heading" class="help-heading">Help: tiers, domains, firmware</h2>
+    <div class="help-block">
+      <h3 class="help-subheading">SAFE vs STRICT</h3>
+      <p class="help-text">
+        A fresh install runs SAFE: 20 high-confidence entries. STRICT adds the
+        aggressive tier on top (115 distinct domains, 123 entries once its 8 zone
+        anchors are repeated as bare whole-zone rules). STRICT may degrade the LG
+        store, break LG account login, and stop ThinQ, LG Channels and firmware
+        updates from working. That is what the tier is for, not a bug.
+      </p>
+    </div>
+    <div class="help-block">
+      <h3 class="help-subheading">The domain list</h3>
+      <p class="help-text">
+        The Domains panel exists to self-debug STRICT: it shows every shipped
+        domain so you can switch single ones off and find which one breaks a
+        feature. Changes are staged until you press Apply changes. Apply rewrites
+        the filter input and briefly restarts the filter, so DNS stops for a
+        couple of seconds; it never happens per toggle. Reset to preset restores
+        the active tier's preset exactly as it ships. The 8 zone rows can be
+        switched in either tier: under STRICT a zone anchor blocks the whole zone,
+        under SAFE it blocks only its own name. If a save would leave a preset
+        with no entries, the TV refuses it and the panel names the preset that
+        would be emptied.
+      </p>
+    </div>
+    <div class="help-block">
+      <h3 class="help-subheading">Firmware updates</h3>
+      <p class="help-text">
+        Firmware/OTA updates are not this app's job; it only informs you. To block
+        or allow them, use the LG TV settings or the Homebrew Channel's update
+        switch.
+      </p>
+    </div>
+    <div class="help-block">
+      <h3 class="help-subheading">Where the lists come from</h3>
+      <p class="help-text">
+        The domain lists and metadata are derived from furkan-bayrak/lg-tv-blocklist
+        and are licensed CC BY 4.0.
+      </p>
+    </div>
+  </section>
   <div class="buttons">
     <button id="btn-refresh">Refresh status</button>
     <button id="btn-check">Check bridge (root)</button>
