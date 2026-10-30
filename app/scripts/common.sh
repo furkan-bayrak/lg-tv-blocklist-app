@@ -110,7 +110,18 @@ lock_acquire() {
   done
   return 1
 }
-lock_release() { rm -rf "$STATE/lock"; }
+lock_release() {
+  # EXIT traps may run after an explicit release. Never remove a new holder's lock.
+  [ "$(cat "$STATE/lock/pid" 2>/dev/null)" = "$$" ] || return 0
+  rm -f "$STATE/lock/pid"
+  rmdir "$STATE/lock" 2>/dev/null
+}
+
+lock_try_acquire() {  # supervisors skip busy work; never wait behind apply/rollback
+  lock_live && return 1
+  mkdir "$STATE/lock" 2>/dev/null || return 1
+  echo $$ > "$STATE/lock/pid"
+}
 
 lock_live() {  # rc 0 = lock present and held (skip); stale lock (dead pid) → cleared, rc 1.
   # A lock whose recorded pid is DEAD is stale → cleared here (a killed apply must

@@ -481,6 +481,78 @@ exit_check() {  # exit_check <name> <pid> <max 0.2s iterations> — process must
   if kill -0 "$2" 2>/dev/null; then no "$1" "still alive (pid $2)"; else ok "$1"; fi
 }
 
+# Disable/recovery regressions. All commands run in the existing sandbox; the
+# upstream FIFO is a deterministic barrier, not a network operation or timer.
+for safety_action in off busy; do
+  new_app_sandbox
+  printf 'pointer=on\nupstream=192.168.179.1\n' > "$SB/state/state"
+  mkfifo "$SB/state/release"
+  printf '%s\n' '#!/bin/sh' \
+    '[ ! -e "$LGTVB_STATE_DIR/returned" ] || : > "$LGTVB_STATE_DIR/continued"' \
+    'exec /bin/sleep "$@"' > "$SB/bin/sleep"
+  chmod +x "$SB/bin/sleep"
+  printf '%s\n' '#!/bin/sh' \
+    ': > "$LGTVB_STATE_DIR/entered"' \
+    'read -r reply < "$LGTVB_STATE_DIR/release"' \
+    "echo '{\"dns1\":\"192.168.179.1\"}'" \
+    ': > "$LGTVB_STATE_DIR/returned"' > "$SB/bin/luna-send"
+  printf '%s\n' \
+    'guard_running() { return 0; }' \
+    'filter_start() { echo recovery-start >> "$TEST_LOG"; }' \
+    'materialize_config() { echo recovery-materialize >> "$TEST_LOG"; return 0; }' \
+    'rules_on_verified() { echo recovery-rules-on >> "$TEST_LOG"; return 0; }' \
+    >> "$SB/appdir/scripts/common.sh"
+  run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
+  if wait_file "$SB/state/entered" 40; then ok "disable race $safety_action: upstream barrier reached"; else no "disable race $safety_action: upstream barrier reached" "no barrier"; fi
+  if [ ! -d "$SB/state/lock" ]; then ok "disable race $safety_action: wait outside lock"; else no "disable race $safety_action: wait outside lock" "lock held"; fi
+  if [ "$safety_action" = off ]; then
+    run_app rollback.sh
+    assert_result 'disable race: rollback completes during upstream wait' off user-off
+  else
+    mkdir "$SB/state/lock"
+    echo $$ > "$SB/state/lock/pid"
+  fi
+  before_state=$(cksum < "$SB/state/state")
+  echo go > "$SB/state/release"
+  wait_file "$SB/state/returned" 40 || no 'disable race: barrier returned' 'timeout'
+  # The next tick proves the recovery continuation completed, including the
+  # stale ON path on the unfixed source. No wall-clock upstream wait involved.
+  wait_file "$SB/state/continued" 40 || no 'disable race: continuation completed' 'timeout'
+  if ! chk_log 'recovery-'; then ok "disable race $safety_action: no restart/materialize/rules-on"; else no "disable race $safety_action: no restart/materialize/rules-on" "$(grep recovery- "$TEST_LOG")"; fi
+  if [ "$(cksum < "$SB/state/state")" = "$before_state" ]; then ok "disable race $safety_action: no state writes"; else no "disable race $safety_action: no state writes" 'state changed'; fi
+  if [ "$safety_action" = off ] && [ ! -d "$SB/state/lock" ]; then ok 'disable race: lock released'; elif [ "$safety_action" = busy ] && [ "$(cat "$SB/state/lock/pid")" = "$$" ]; then ok 'disable race: foreign lock retained'; else no 'disable race: lock ownership' 'unexpected lock'; fi
+  stop_t4
+done
+
+new_app_sandbox
+printf 'pointer=on\n' > "$SB/state/state"
+mkfifo "$SB/state/start-release"
+# Keep both FIFO ends open in the harness: TERM may arrive just before the
+# keeper enters read, and must not strand the harness opening a write-only end.
+exec 7<> "$SB/state/start-release"
+printf '%s\n' \
+  'guard_running() { return 0; }' \
+  'materialize_config() { return 0; }' \
+  'filter_start() {' \
+  '  [ "$(cat "$STATE/lock/pid" 2>/dev/null)" != "$$" ] || : > "$STATE/mutation-locked"' \
+  '  : > "$STATE/starting"' \
+  '  read -r reply < "$STATE/start-release"' \
+  '}' >> "$SB/appdir/scripts/common.sh"
+run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
+if wait_file "$SB/state/starting" 40 && [ -f "$SB/state/mutation-locked" ]; then ok 'keeper recovery: mutation owns lock'; else no 'keeper recovery: mutation owns lock' 'not locked'; fi
+kill -TERM "$KEEPER_PID"
+echo go >&7
+wait "$KEEPER_PID" 2>/dev/null || true
+exec 7>&-
+if [ ! -d "$SB/state/lock" ]; then ok 'keeper recovery: TERM releases lock'; else no 'keeper recovery: TERM releases lock' 'lock leaked'; fi
+if ! chk_log '-I OUTPUT'; then ok 'keeper recovery: TERM does not rearm'; else no 'keeper recovery: TERM does not rearm' 'jump added'; fi
+stop_t4
+
+if [ "${LGTVB_SAFETY_ONLY:-}" = keeper ]; then
+  printf '\n%s passed, %s failed\n' "$pass" "$fail"
+  [ "$fail" -eq 0 ]; exit $?
+fi
+
 # --- T3 Case 1: apply happy path ---------------------------------------------
 new_app_sandbox
 blocked="$(grep -m1 '^=' "$SB/appdir/filter/filter-input.txt" | cut -c2-)"
