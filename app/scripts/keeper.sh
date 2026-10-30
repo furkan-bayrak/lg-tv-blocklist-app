@@ -48,7 +48,9 @@ while :; do
   # also covers an OFF boot with stray rules and a failed first cleanup.
   if [ -e "$STATE/cleanup-pending" ]; then
     if lock_try_acquire; then
-      fail_open_terminal "cleanup-retry"
+      # A successful Apply may have cleared this marker before acquisition.
+      # Never let a stale cleanup decision undo its newly verified ON state.
+      [ ! -e "$STATE/cleanup-pending" ] || fail_open_terminal "cleanup-retry"
     fi
     continue
   fi

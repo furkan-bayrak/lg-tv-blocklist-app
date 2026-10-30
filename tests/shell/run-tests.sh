@@ -642,6 +642,35 @@ for safety_caller in keeper guard boot apply; do
   stop_t4
 done
 
+# A successful Apply can clear pending cleanup between the keeper's first
+# observation and lock acquisition. Simulate that exact boundary in the stub.
+new_app_sandbox
+printf 'pointer=on\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+start_fake_filter
+: > "$SB/state/cleanup-pending"
+printf '%s\n' \
+  'guard_running() { return 0; }' \
+  'lock_try_acquire() {' \
+  '  rm -f "$STATE/cleanup-pending"' \
+  '  mkdir "$STATE/lock" || return 1' \
+  '  echo $$ > "$STATE/lock/pid"' \
+  '  : > "$STATE/returned"' \
+  '}' >> "$SB/appdir/scripts/common.sh"
+printf '%s\n' '#!/bin/sh' \
+  '[ ! -e "$LGTVB_STATE_DIR/returned" ] || : > "$LGTVB_STATE_DIR/continued"' \
+  'exec /bin/sleep "$@"' > "$SB/bin/sleep"
+chmod +x "$SB/bin/sleep"
+run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
+wait_file "$SB/state/continued" 40 || no 'cleanup stale marker: continuation completed' 'timeout'
+if chk_state '^pointer=on$' && [ -s "$SB/state/filter.pid" ] && ! jrnl 'terminal-giveup'; then ok 'cleanup stale marker: successful Apply is not undone'; else no 'cleanup stale marker: successful Apply is not undone' 'stale cleanup disabled new ON'; fi
+kill -TERM "$KEEPER_PID"
+wait "$KEEPER_PID" 2>/dev/null || true
+# Let the fixture's filter-death watcher finish before removing its sandbox.
+if [ -s "$SB/state/filter.pid" ]; then kill -9 "$(cat "$SB/state/filter.pid")" 2>/dev/null; fi
+wait_for "$TEST_LOG" 'filter-killed' 40 || no 'cleanup stale marker: fixture reaped' 'watcher timeout'
+stop_t4
+
 # A live lock must postpone guard cleanup, without abandoning the deadman.
 new_app_sandbox
 printf 'pointer=on\n' > "$SB/state/state"
