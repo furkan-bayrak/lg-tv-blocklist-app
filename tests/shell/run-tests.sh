@@ -1589,11 +1589,21 @@ stop_t4
 
 run_dnsq_nc() {  # run_dnsq_nc <response-file> [name] [server] [port]
   SB_NC="$(mktemp -d "$SB_ROOT/nc.XXXXXX")"
-  printf '#!/bin/sh\ncat "$NC_RESPONSE_FILE"\n' > "$SB_NC/nc"
+  cat > "$SB_NC/nc" <<'NC_STUB'
+#!/bin/sh
+printf 'called\n' >> "$NC_STUB_CALLED"
+cat "$NC_RESPONSE_FILE"
+NC_STUB
   chmod +x "$SB_NC/nc"
-  export NC_RESPONSE_FILE="$1"
-  OUT="$(env PATH="$SB_NC:/usr/bin:/bin" NC_RESPONSE_FILE="$1" sh "$SCRIPTS_SRC/dnsq.sh" "${2:-example.com}" "${3:-127.0.0.1}" "${4:-53}" 2>&1)"
+  # Keep the fallback environment hermetic: /bin and /usr/bin contain node on
+  # common hosts, which would select dnsq.js before the nc stub can run.
+  ln -s "$(command -v cat)" "$SB_NC/cat"
+  ln -s "$(command -v od)" "$SB_NC/od"
+  ln -s "$(command -v awk)" "$SB_NC/awk"
+  export NC_RESPONSE_FILE="$1" NC_STUB_CALLED="$SB_NC/nc-called"
+  OUT="$(env PATH="$SB_NC" NC_RESPONSE_FILE="$1" NC_STUB_CALLED="$NC_STUB_CALLED" "$SH" "$SCRIPTS_SRC/dnsq.sh" "${2:-example.com}" "${3:-127.0.0.1}" "${4:-53}" 2>&1)"
   RC=$?
+  if [ -s "$NC_STUB_CALLED" ]; then ok "dnsq nc: hermetic nc stub selected"; else no "dnsq nc: hermetic nc stub selected" "nc stub was not invoked (node may have taken precedence)"; fi
 }
 
 new_app_sandbox
