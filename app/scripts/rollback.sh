@@ -13,7 +13,13 @@ trap 'lock_release' EXIT
 trap 'lock_release; exit 130' INT TERM HUP
 
 log "rollback-start"
-rules_off
+if ! rules_off; then
+  # Keep the serving resolver and current pointer. The marker makes keeper
+  # retry OFF even when the previous intent was already off (e.g. boot stray).
+  ensure_supervisors
+  echo "RESULT=fail"; echo "reason=cleanup-failed"
+  exit 0
+fi
 filter_kill
 state_set pointer off
 rm -f "$STATE/gaveup"

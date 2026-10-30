@@ -10,7 +10,8 @@ SELF_DIR=${SELF%/*}
 ensure_state
 log "boot-start pid=$$"
 # reboot wiped all processes: clear stale runtime files (NOT state/intent)
-rm -f "$STATE/keeper.pid" "$STATE/guard.pid" "$STATE/filter.pid"
+rm -f "$STATE/keeper.pid" "$STATE/guard.pid"
+# Retain any serving filter's pid until cleanup is verified (also safe if stale).
 rm -rf "$STATE/lock"
 pointer=$(state_get pointer)
 [ -n "$pointer" ] || pointer=off
@@ -21,12 +22,19 @@ if [ "$pointer" = "on" ]; then
   log "boot-reconcile pointer=on delegated=keeper"
 else
   # pointer=off: guarantee no stray live protection from an unclean shutdown.
-  # Guarded by cheap chain checks so the common path costs two iptables probes.
-  if iptables -t nat -C OUTPUT -j "$RULES_NAT" 2>/dev/null || iptables -C OUTPUT -j "$RULES_FLT" 2>/dev/null; then
-    log "boot-reconcile pointer=off stray-rules-found"
-    rules_off
-    filter_kill
-    log "boot-reconcile pointer=off live-cleaned"
+  if lock_try_acquire; then
+    trap 'lock_release' EXIT
+    trap 'exit 130' INT TERM HUP
+    if rules_off; then
+      filter_kill
+      if [ "$RULES_OFF_FOUND" = 1 ]; then
+        log "boot-reconcile pointer=off stray-rules-found"
+        log "boot-reconcile pointer=off live-cleaned"
+      fi
+    else
+      log "boot-reconcile pointer=off cleanup=failed retry=pending"
+    fi
+    lock_release
   fi
 fi
 

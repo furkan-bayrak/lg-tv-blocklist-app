@@ -347,6 +347,27 @@ new_app_sandbox() {
     'esac' \
     > "$SB/appdir/scripts/probe.sh"
   chmod +x "$SB/appdir/scripts/probe.sh"
+  # Preserve the existing ruleset stub, but expose real iptables -S syntax and
+  # deterministic cleanup faults. This wrapper never invokes host iptables.
+  mv "$SB/bin/iptables" "$SB/bin/iptables-model"
+  printf '%s\n' '#!/bin/sh' \
+    'table=filter; [ "${1:-}" != -t ] || { table=$2; shift 2; }' \
+    'op=${1:-}; chain=${2:-}' \
+    'fault="$TEST_IPT_STATE.fault"' \
+    'if [ -f "$fault" ] && [ "$(cut -d " " -f1 "$fault")" = "$op" ] && [ "$table" = nat ]; then' \
+    '  mode=$(cut -d " " -f2 "$fault")' \
+    '  echo "fault $op $mode" >> "$TEST_LOG"' \
+    '  [ "$mode" != once ] || rm -f "$fault"' \
+    '  echo "xtables lock error" >&2; exit 1' \
+    'fi' \
+    'if [ "$op" = -S ]; then' \
+    '  echo "iptables -t $table -S" >> "$TEST_LOG"' \
+    '  echo "-P OUTPUT ACCEPT"' \
+    '  sed -n -e "s/^C $table /-N /p" -e "s/^R $table /-A /p" "$TEST_IPT_STATE"' \
+    '  exit 0' \
+    'fi' \
+    'exec "${0%/*}/iptables-model" -t "$table" "$@"' > "$SB/bin/iptables"
+  chmod +x "$SB/bin/iptables"
   TEST_LOG="$SB/test.log"; : > "$TEST_LOG"
   TEST_IPT_STATE="$SB/ipt.state"; : > "$TEST_IPT_STATE"
   TEST_DNSQ_NAME_RC="$SB/dnsq-name-rc"; : > "$TEST_DNSQ_NAME_RC"
@@ -549,6 +570,108 @@ if ! chk_log '-I OUTPUT'; then ok 'keeper recovery: TERM does not rearm'; else n
 stop_t4
 
 if [ "${LGTVB_SAFETY_ONLY:-}" = keeper ]; then
+  printf '\n%s passed, %s failed\n' "$pass" "$fail"
+  [ "$fail" -eq 0 ]; exit $?
+fi
+
+# Cleanup faults: single failures must recover; persistent failures must stay
+# truthful and retain service plus an explicit retry path. Counters prove the
+# fault actually fired and that retry is bounded, not just a successful exit.
+for safety_op in -C -D -F -X -S; do
+  for safety_mode in once always; do
+    new_app_sandbox
+    printf 'pointer=on\n' > "$SB/state/state"
+    seed_rules 192.168.179.1
+    echo 'R nat OUTPUT -j FOREIGN' >> "$TEST_IPT_STATE"
+    start_fake_filter
+    echo "$safety_op $safety_mode" > "$TEST_IPT_STATE.fault"
+    # Keep recovery paused so assertions observe rollback's failure boundary.
+    printf '%s\n' 'ensure_supervisors() { echo retry-supervisors >> "$TEST_LOG"; }' >> "$SB/appdir/scripts/common.sh"
+    run_app rollback.sh
+    fault_count=$(grep -c '^fault ' "$TEST_LOG" || true)
+    if [ "$fault_count" -ge 1 ] && [ "$fault_count" -le 3 ]; then ok "cleanup $safety_op $safety_mode: fault fired boundedly ($fault_count)"; else no "cleanup $safety_op $safety_mode: bounded fault" "$fault_count"; fi
+    if [ "$safety_mode" = once ]; then
+      assert_result "cleanup $safety_op transient: OFF only after cleanup" off user-off
+      if ! grep -q 'LGTVBLK' "$TEST_IPT_STATE" && [ ! -e "$SB/state/filter.pid" ]; then ok "cleanup $safety_op transient: rules absent before service stopped"; else no "cleanup $safety_op transient: fully cleaned" 'rules or service retained'; fi
+    else
+      assert_result "cleanup $safety_op persistent: truthful failure" fail cleanup-failed
+      if [ -s "$SB/state/filter.pid" ] && kill -0 "$(cat "$SB/state/filter.pid")" 2>/dev/null && chk_state '^pointer=on$'; then ok "cleanup $safety_op persistent: service and ON retained"; else no "cleanup $safety_op persistent: service and ON retained" 'service killed or false OFF'; fi
+      if [ -e "$SB/state/cleanup-pending" ] && chk_log 'retry-supervisors'; then ok "cleanup $safety_op persistent: retry path retained"; else no "cleanup $safety_op persistent: retry path retained" 'no retry'; fi
+      if [ "$safety_op" = -C ] || [ "$safety_op" = -D ] || [ "$safety_op" = -S ]; then
+        if grep -qx 'R nat OUTPUT -j LGTVBLK' "$TEST_IPT_STATE"; then ok "cleanup $safety_op persistent: retained redirect fixture"; else no "cleanup $safety_op persistent: redirect fixture" 'redirect unexpectedly gone'; fi
+      fi
+      rm -f "$TEST_IPT_STATE.fault"
+      run_app rollback.sh
+      assert_result "cleanup $safety_op persistent: retry succeeds after fault clears" off user-off
+    fi
+    if grep -qx 'R nat OUTPUT -j FOREIGN' "$TEST_IPT_STATE"; then ok "cleanup $safety_op $safety_mode: foreign rule preserved"; else no "cleanup $safety_op $safety_mode: foreign rule preserved" 'foreign rule lost'; fi
+    if [ ! -d "$SB/state/lock" ]; then ok "cleanup $safety_op $safety_mode: lock released"; else no "cleanup $safety_op $safety_mode: lock released" 'lock leaked'; fi
+    cleanup_app_sandbox
+  done
+done
+new_app_sandbox
+run_app rollback.sh
+assert_result 'cleanup: absent rules and chains is successful OFF' off user-off
+cleanup_app_sandbox
+
+# Exercise every cleanup owner, including OFF boot and guard's deadman path.
+for safety_caller in keeper guard boot apply; do
+  new_app_sandbox
+  printf 'pointer=on\n' > "$SB/state/state"
+  [ "$safety_caller" != boot ] || printf 'pointer=off\n' > "$SB/state/state"
+  seed_rules 192.168.179.1
+  start_fake_filter
+  echo '-D always' > "$TEST_IPT_STATE.fault"
+  case $safety_caller in
+    keeper)
+      : > "$SB/proc_tcp"
+      run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID ;;
+    guard)
+      make_dead_pid; echo "$DEAD_PID" > "$SB/state/keeper.pid"
+      run_bg guard.sh; GUARD_PID=$LAST_BG_PID ;;
+    boot|apply)
+      run_app "$safety_caller.sh"
+      if [ "$safety_caller" = apply ]; then assert_result 'apply detach failure: truthful result' fail cleanup-failed; fi ;;
+  esac
+  if wait_file "$SB/state/cleanup-pending" 60 && [ -s "$SB/state/filter.pid" ] && kill -0 "$(cat "$SB/state/filter.pid")" 2>/dev/null; then ok "$safety_caller cleanup: failure keeps serving resolver"; else no "$safety_caller cleanup: failure keeps serving resolver" 'missing retry or live service'; fi
+  if grep -qx 'R nat OUTPUT -j LGTVBLK' "$TEST_IPT_STATE" && ! jrnl 'terminal-giveup\|rollback-done\|live-cleaned'; then ok "$safety_caller cleanup: retained redirect never false OFF success"; else no "$safety_caller cleanup: truthful state" 'redirect lost or false success'; fi
+  starts=$(grep -c 'filter-start' "$TEST_LOG" || true)
+  if [ "$starts" = 1 ]; then ok "$safety_caller cleanup: no serving-filter restart"; else no "$safety_caller cleanup: no serving-filter restart" "$starts starts"; fi
+  rm -f "$TEST_IPT_STATE.fault"
+  if wait_for "$SB/state/state" '^pointer=off$' 60 && wait_for "$SB/state/journal.log" 'terminal-giveup' 60 && [ ! -e "$SB/state/cleanup-pending" ] && [ ! -e "$SB/state/filter.pid" ]; then ok "$safety_caller cleanup: automatic OFF retry succeeds"; else no "$safety_caller cleanup: automatic OFF retry succeeds" "$(tail -5 "$SB/state/journal.log")"; fi
+  stop_t4
+done
+
+# A live lock must postpone guard cleanup, without abandoning the deadman.
+new_app_sandbox
+printf 'pointer=on\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+make_dead_pid; echo "$DEAD_PID" > "$SB/state/keeper.pid"
+mkdir "$SB/state/lock"; echo $$ > "$SB/state/lock/pid"
+run_bg guard.sh; GUARD_PID=$LAST_BG_PID
+wait_for "$SB/state/journal.log" 'guard-fired' 40 || no 'guard busy: deadman detected' 'timeout'
+if [ ! -s "$TEST_LOG" ] && [ "$(cat "$SB/state/lock/pid")" = "$$" ]; then ok 'guard busy: no firewall mutations or lock theft'; else no 'guard busy: no firewall mutations or lock theft' 'mutated'; fi
+rm -f "$SB/state/lock/pid"; rmdir "$SB/state/lock"
+if wait_for "$SB/state/journal.log" 'terminal-giveup reason=keeper-dead' 40; then ok 'guard busy: retries fail-open after release'; else no 'guard busy: retries fail-open after release' 'timeout'; fi
+wait "$GUARD_PID" 2>/dev/null || true
+if [ ! -d "$SB/state/lock" ]; then ok 'guard success: releases lock'; else no 'guard success: releases lock' 'leaked'; fi
+stop_t4
+
+# A command reporting rc=0 with no usable listing is NOT evidence of absence.
+new_app_sandbox
+printf 'pointer=on\n' > "$SB/state/state"
+seed_rules 192.168.179.1
+start_fake_filter
+printf '%s\n' '#!/bin/sh' \
+  'case " $* " in *" -S "*) echo malformed >> "$TEST_LOG"; exit 0;; esac' \
+  'exec "${0%/*}/iptables-model" "$@"' > "$SB/bin/iptables"
+printf '%s\n' 'ensure_supervisors() { :; }' >> "$SB/appdir/scripts/common.sh"
+run_app rollback.sh
+assert_result 'cleanup malformed listing: truthful failure' fail cleanup-failed
+if [ -e "$SB/state/filter.pid" ] && chk_state '^pointer=on$'; then ok 'cleanup malformed listing: retains service and intent'; else no 'cleanup malformed listing: retains service and intent' 'false OFF'; fi
+cleanup_app_sandbox
+
+if [ "${LGTVB_SAFETY_ONLY:-}" = cleanup ]; then
   printf '\n%s passed, %s failed\n' "$pass" "$fail"
   [ "$fail" -eq 0 ]; exit $?
 fi

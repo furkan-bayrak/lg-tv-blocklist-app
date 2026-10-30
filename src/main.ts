@@ -434,6 +434,8 @@
         return "Setup files couldn't be written.";
       case 'locked':
         return 'Busy — try again in a moment.';
+      case 'cleanup-failed':
+        return "Firewall cleanup couldn't be confirmed. Protection may still be active; cleanup will retry. Try turning it off again.";
       case 'no-firewall-layer':
         return "This TV can't enforce filtering (no firewall layer). Protection can't be turned on here.";
       default:
@@ -452,7 +454,7 @@
       return reason === 'no-firewall-layer';
     }
     if (result === 'fail') {
-      return reason === 'locked' || reason === 'upstream-unreachable' || reason === 'materialize' ||
+      return reason === 'locked' || reason === 'cleanup-failed' || reason === 'upstream-unreachable' || reason === 'materialize' ||
         reason === 'filter-sideport' || reason === 'rules-add' || reason === 'verify-canary' ||
         reason === 'verify-blocked';
     }

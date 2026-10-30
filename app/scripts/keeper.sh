@@ -44,6 +44,15 @@ while :; do
     "$SELF_DIR/guard.sh" >>"$STATE/guard.log" 2>&1 </dev/null &
   fi
 
+  # Cleanup failures must retry OFF, never fall through to ON recovery. This
+  # also covers an OFF boot with stray rules and a failed first cleanup.
+  if [ -e "$STATE/cleanup-pending" ]; then
+    if lock_try_acquire; then
+      fail_open_terminal "cleanup-retry"
+    fi
+    continue
+  fi
+
   pointer=$(state_get pointer)
   [ "$pointer" = "on" ] || { cmiss=0; continue; }
 
@@ -71,7 +80,7 @@ while :; do
         fi
         if [ "$up2" != "$up" ]; then
           log "keeper-upstream-changed"
-          rules_off                      # fail-open first (DNS via new network path)
+          rules_off || continue          # keep serving if cleanup is uncertain
           filter_kill
           if ! materialize_config "$up2"; then
             fail_open_terminal "upstream-change-materialize"
@@ -100,7 +109,7 @@ while :; do
   cmiss=0
   keeper_lock_on || continue
   log "keeper-filter-dead restore-first"
-  rules_off                          # resolver restored FIRST
+  rules_off || continue              # resolver restored FIRST, or retry OFF
   filter_kill
 
   # B-budget/T8: a missing binary can never come back by retrying. Recognize it

@@ -438,17 +438,55 @@ rules_on() {  # $1 upstream; builds chain contents FIRST, jump LAST
   iptables -A "$RULES_FLT" -p udp --dport 853 -j DROP
   iptables -C OUTPUT -j "$RULES_FLT" 2>/dev/null || iptables -I OUTPUT 1 -j "$RULES_FLT"
 }
-rules_off() {  # resolver restored FIRST (jump removed = protection off instantly)
-  if iptables -t nat -C OUTPUT -j "$RULES_NAT" 2>/dev/null; then
-    iptables -t nat -D OUTPUT -j "$RULES_NAT"
-    iptables -t nat -F "$RULES_NAT"
+# Cleanup callers hold the shared lock. Never interpret a failed -C as proof
+# of absence: iptables uses rc=1 for both missing rules and xtables contention.
+# A successful full-table listing is the authority, including missing chains.
+rules_off_table() {  # $1 table, $2 owned chain; no global/foreign mutations
+  ro_listing=$(iptables -t "$1" -S 2>/dev/null) || return 1
+  # Full -S always includes OUTPUT's policy. Reject empty/malformed responses.
+  printf '%s\n' "$ro_listing" | grep -q '^-P OUTPUT ' || return 1
+  if printf '%s\n' "$ro_listing" | grep -qxF -- "-A OUTPUT -j $2"; then
+    RULES_OFF_FOUND=1
+    iptables -t "$1" -C OUTPUT -j "$2" 2>/dev/null || return 1
+    iptables -t "$1" -D OUTPUT -j "$2" 2>/dev/null || return 1
   fi
-  if iptables -C OUTPUT -j "$RULES_FLT" 2>/dev/null; then
-    iptables -D OUTPUT -j "$RULES_FLT"
-    iptables -F "$RULES_FLT"
+  # Verify ALL OUTPUT references (including duplicate/conditional jumps) are
+  # gone before flushing. Only the exact jump installed by this app is deleted.
+  ro_listing=$(iptables -t "$1" -S 2>/dev/null) || return 1
+  printf '%s\n' "$ro_listing" | grep -q '^-P OUTPUT ' || return 1
+  if printf '%s\n' "$ro_listing" | grep '^-A OUTPUT ' | grep -Eq -- " -[jg] $2( |$)"; then
+    return 1
   fi
-  iptables -t nat -X "$RULES_NAT" 2>/dev/null
-  iptables -X "$RULES_FLT" 2>/dev/null
+  if printf '%s\n' "$ro_listing" | grep -qxF -- "-N $2"; then
+    RULES_OFF_FOUND=1
+    iptables -t "$1" -F "$2" 2>/dev/null || return 1
+    iptables -t "$1" -X "$2" 2>/dev/null || return 1
+  fi
+  ro_listing=$(iptables -t "$1" -S 2>/dev/null) || return 1
+  printf '%s\n' "$ro_listing" | grep -q '^-P OUTPUT ' || return 1
+  printf '%s\n' "$ro_listing" | grep -qxF -- "-N $2" && return 1
+  printf '%s\n' "$ro_listing" | grep '^-A OUTPUT ' | grep -Eq -- " -[jg] $2( |$)" && return 1
+  return 0
+}
+
+rules_off() {  # bounded cleanup; failure retains service and schedules OFF retry
+  RULES_OFF_FOUND=0
+  ro_attempt=0
+  while [ "$ro_attempt" -lt "$RULES_RETRY" ]; do
+    ro_attempt=$((ro_attempt+1))
+    # Try both tables even if one fails: retain guard's best-effort fail-open.
+    ro_ok=1
+    rules_off_table nat "$RULES_NAT" || ro_ok=0
+    rules_off_table filter "$RULES_FLT" || ro_ok=0
+    if [ "$ro_ok" = 1 ]; then
+      rm -f "$STATE/cleanup-pending"
+      return 0
+    fi
+    [ "$ro_attempt" -ge "$RULES_RETRY" ] || sleep "$RULES_RETRY_SLEEP"
+  done
+  : > "$STATE/cleanup-pending"
+  log "cleanup-failed retry=pending"
+  return 1
 }
 rules_present() {  # $1 upstream — all -C checks must pass
   up=$1
@@ -494,8 +532,11 @@ rules_on_verified() {
   return 1
 }
 
-fail_open_terminal() {  # $1 = reason; terminal give-up: protection OFF, TV works
-  rules_off
+fail_open_terminal() {  # caller holds lock; terminal ONLY after verified cleanup
+  if ! rules_off; then
+    log "terminal-deferred reason=$1 cleanup=failed"
+    return 1
+  fi
   filter_kill
   # Marker BEFORE pointer=off: any reader that sees the off state also sees the
   # attention flag (check.sh reads the two independently; no window with

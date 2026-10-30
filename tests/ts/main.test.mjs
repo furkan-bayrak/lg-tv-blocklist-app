@@ -299,6 +299,23 @@ test('single-flight: registerHook holds busy through the nested readHookState', 
   assert.equal(count(calls, 'runCheck'), 2);
 });
 
+test('cleanup failure is explicit and malformed cleanup results never claim success', () => {
+  for (const result of ['fail', 'off', 'on', 'unknown']) {
+    const { elements, pending } = loadMain();
+    resolveProbe(pending, STATUS_BLOCK_ON);
+    elements['btn-protect'].handlers.click();
+    resolve(pending, 'runRollback', {
+      returnValue: true,
+      stdoutString: 'RESULT=' + result + '\nreason=cleanup-failed'
+    });
+    resolve(pending, 'runCheck', { returnValue: true, stdoutString: STATUS_BLOCK_ON });
+    assert.equal(elements['status'].textContent, result === 'fail'
+      ? "Firewall cleanup couldn't be confirmed. Protection may still be active; cleanup will retry. Try turning it off again."
+      : "The TV didn't return a clear result. Check the status below.");
+    assert.notEqual(elements['status'].textContent, 'Protection is off.');
+  }
+});
+
 // --- S6a T3: the tier row and the SAFE/STRICT switch -------------------------
 
 test('the tier comes only from a parsed block, and switching is refused before one arrives', () => {

@@ -32,6 +32,14 @@ if [ -z "$up" ] || ! canary_upstream "$up"; then
   exit 0
 fi
 
+# An earlier ON/partial apply may still redirect DNS to the running filter.
+# Verify detachment before materializing/restarting that serving resolver.
+if ! rules_off; then
+  ensure_supervisors
+  echo "RESULT=fail"; echo "reason=cleanup-failed"
+  exit 0
+fi
+
 if ! materialize_config "$up"; then
   log "apply-fail stage=materialize"
   lock_release
@@ -56,7 +64,12 @@ if ! rules_on_verified "$up"; then
     canary) log "apply-fail stage=e2e";     reason=verify-canary ;;
     *)      log "apply-fail stage=blocked"; reason=verify-blocked ;;
   esac
-  rules_off; filter_kill            # restore resolver FIRST, filter second
+  if rules_off; then
+    filter_kill                    # confirmed resolver restoration FIRST
+  else
+    reason=cleanup-failed
+    ensure_supervisors             # cleanup-pending overrides ON recovery
+  fi
   lock_release
   echo "RESULT=fail"; echo "reason=$reason"
   exit 0
