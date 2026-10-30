@@ -22,7 +22,9 @@ log "keeper-start pid=$$"
 keeper_unlock() { lock_release; }
 keeper_lock_on() {
   lock_try_acquire || return 1
-  [ "$(state_get pointer)" = on ] && return 0
+  # Failed Disable retains pointer=on to describe the still-serving filter.
+  # Its pending OFF request remains authoritative even after unlocked probes.
+  [ "$(state_get pointer)" = on ] && [ ! -e "$STATE/cleanup-pending" ] && return 0
   keeper_unlock
   return 1
 }
@@ -140,6 +142,10 @@ while :; do
     fail_open_terminal "upstream-wait-timeout"
     continue
   fi
+  # Apply may have installed a new serving filter and redirects while we
+  # waited unlocked. The earlier detachment proof is no longer valid: verify
+  # fresh cleanup under this lock before any state/config/filter replacement.
+  rules_off || continue
   state_set upstream "$up"
   if ! materialize_config "$up"; then
     fail_open_terminal "materialize"    # never restart the filter on a stale/half config

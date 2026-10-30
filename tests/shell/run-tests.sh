@@ -569,6 +569,76 @@ if [ ! -d "$SB/state/lock" ]; then ok 'keeper recovery: TERM releases lock'; els
 if ! chk_log '-I OUTPUT'; then ok 'keeper recovery: TERM does not rearm'; else no 'keeper recovery: TERM does not rearm' 'jump added'; fi
 stop_t4
 
+# Late OFF intent and a newer Apply must be reconciled after unlocked probes.
+# FIFO barriers place the competing command after the tick-start marker check.
+for followup_case in pending-upstream pending-wait apply-wait; do
+  new_app_sandbox
+  printf 'pointer=on\nupstream=192.168.179.1\n' > "$SB/state/state"
+  mkfifo "$SB/state/release"
+  exec 7<> "$SB/state/release"
+  # Only the next tick (not cleanup's zero-second retry sleep) completes
+  # the continuation. Stop before another tick can retry pending cleanup.
+  printf '%s\n' '#!/bin/sh' \
+    'if [ "$1" = 1 ] && [ -e "$LGTVB_STATE_DIR/returned" ]; then : > "$LGTVB_STATE_DIR/continued"; fi' \
+    'exec /bin/sleep "$@"' > "$SB/bin/sleep"
+  chmod +x "$SB/bin/sleep"
+  printf '%s\n' \
+    'guard_running() { return 0; }' \
+    'ensure_supervisors() { :; }' \
+    'materialize_config() { case "$SELF" in */keeper.sh) echo followup-materialize >> "$TEST_LOG";; esac; return 0; }' \
+    'rules_on_verified() { case "$SELF" in */keeper.sh) echo followup-rearm >> "$TEST_LOG";; esac; rules_on "$1"; }' \
+    'upstream_learn() {' \
+    '  case "$SELF" in */keeper.sh)' \
+    '    if [ ! -e "$STATE/upstream-probe" ]; then' \
+    '      : > "$STATE/entered"; read -r reply < "$STATE/release"' \
+    '      : > "$STATE/returned"' \
+    '    fi;; esac' \
+    '  echo 192.168.5.5' \
+    '}' >> "$SB/appdir/scripts/common.sh"
+  if [ "$followup_case" = pending-upstream ]; then
+    start_fake_filter
+    # Healthy filter, missing rules: stop in the last unlocked integrity probe.
+    printf '%s\n' \
+      'rules_present() {' \
+      '  : > "$STATE/entered"; read -r reply < "$STATE/release"' \
+      '  : > "$STATE/returned"; : > "$STATE/upstream-probe"; return 1' \
+      '}' >> "$SB/appdir/scripts/common.sh"
+  fi
+  run_bg keeper.sh; KEEPER_PID=$LAST_BG_PID
+  if wait_file "$SB/state/entered" 40 && [ ! -d "$SB/state/lock" ]; then ok "$followup_case: unlocked barrier reached"; else no "$followup_case: unlocked barrier reached" 'timeout or lock held'; fi
+  if [ "$followup_case" = apply-wait ]; then
+    run_app apply.sh
+    assert_result 'apply during wait: new ON completes' on verified
+  else
+    # Failed Disable retains ON and the serving filter, but requests OFF.
+    seed_rules 192.168.179.1
+    [ "$followup_case" = pending-upstream ] || start_fake_filter
+  fi
+  echo '-D always' > "$TEST_IPT_STATE.fault"
+  if [ "$followup_case" != apply-wait ]; then
+    run_app rollback.sh
+    assert_result "$followup_case: Disable truthfully fails" fail cleanup-failed
+    # The cleanup fault may clear, but retained OFF intent must still win.
+    [ "$followup_case" != pending-upstream ] || : > "$TEST_IPT_STATE.fault"
+  fi
+  serving_pid=$(cat "$SB/state/filter.pid")
+  before_state=$(cksum < "$SB/state/state")
+  before_starts=$(grep -c 'filter-start' "$TEST_LOG" || true)
+  echo go >&7
+  wait_file "$SB/state/continued" 40 || no "$followup_case: continuation completed" 'timeout'
+  kill -TERM "$KEEPER_PID"
+  wait "$KEEPER_PID" 2>/dev/null || true
+  exec 7>&-
+  if [ -e "$SB/state/cleanup-pending" ] && chk_state '^pointer=on$'; then ok "$followup_case: pending OFF retained truthfully"; else no "$followup_case: pending OFF retained truthfully" 'marker lost or false OFF'; fi
+  if [ "$(cat "$SB/state/filter.pid" 2>/dev/null)" = "$serving_pid" ] && kill -0 "$serving_pid" 2>/dev/null && [ "$(grep -c 'filter-start' "$TEST_LOG" || true)" = "$before_starts" ]; then ok "$followup_case: serving filter never replaced"; else no "$followup_case: serving filter never replaced" 'serving pid killed/restarted'; fi
+  if ! chk_log 'followup-' && [ "$(cksum < "$SB/state/state")" = "$before_state" ]; then ok "$followup_case: no ON materialize/rearm/state writes"; else no "$followup_case: no ON materialize/rearm/state writes" 'ON mutation after barrier'; fi
+  if grep -qx 'R nat OUTPUT -j LGTVBLK' "$TEST_IPT_STATE"; then ok "$followup_case: redirect fixture retained"; else no "$followup_case: redirect fixture retained" 'redirect lost'; fi
+  if [ "$followup_case" = apply-wait ]; then
+    if chk_log '^fault -D always'; then ok 'apply during wait: fresh cleanup attempted and failed'; else no 'apply during wait: fresh cleanup attempted and failed' 'stale detachment proof reused'; fi
+  fi
+  stop_t4
+done
+
 if [ "${LGTVB_SAFETY_ONLY:-}" = keeper ]; then
   printf '\n%s passed, %s failed\n' "$pass" "$fail"
   [ "$fail" -eq 0 ]; exit $?
