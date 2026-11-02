@@ -2,7 +2,7 @@
   "name": "lg-tv-blocklist-app",
   "version": "0.4.2",
   "private": true,
-  "description": "Companion app to lg-tv-blocklist: one-switch DNS blocking for rooted LG webOS TVs, installed via the Homebrew Channel.",
+  "description": "Experimental DNS blocking with SAFE/STRICT profiles for rooted LG webOS TVs via the Homebrew Channel.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -17,8 +17,9 @@
     "check:node8": "node tools/check-node8.mjs",
     "test:ts": "node --test \"tests/ts/*.test.mjs\"",
     "test:shell": "sh tests/shell/run-tests.sh",
-    "test": "npm run build && npm run check:es5 && npm run test:ts && npm run test:shell",
-    "package": "ares-package --outdir dist --no-minify app",
+    "test:packaging": "python3 -B -m unittest discover -s tests/packaging -p 'test_*.py'",
+    "test": "npm run build && npm run check:es5 && npm run test:ts && npm run test:shell && npm run test:packaging",
+    "package": "ares-package --outdir dist --no-minify app && python3 -B tools/normalize-ipk.py dist/*.ipk",
     "dist": "npm test && npm run package"
   },
   "devDependencies": {

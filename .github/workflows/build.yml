@@ -54,53 +54,76 @@ jobs:
       - name: Shell tests (check.sh sandbox)
         run: sh tests/shell/run-tests.sh
 
+      - name: Packaging metadata regression tests (synthetic archives only)
+        run: npm run test:packaging
+
       - name: Fetch + verify filter binary (pinned sha256)
         run: node tools/fetch-filter.mjs
 
-      - name: Package IPK
-        run: npx ares-package --outdir dist --no-minify app
+      - name: Package IPK and normalize metadata before assertions or hashing
+        run: npm run package
 
-      - name: Assert IPK contents (pinned filter binary + runtime scripts present)
+      - name: Assert normalized IPK metadata and byte-identical payloads
         run: |
-          set -euo pipefail
-          tmp="$(mktemp -d)"
-          ar p dist/*.ipk data.tar.gz | tar -xzf - -C "$tmp"
-          appdir="usr/palm/applications/io.github.furkanbayrak.lgtvblocklist"
-          for f in \
-            filter/dnscrypt-proxy \
-            filter/filter-input.txt \
-            filter/filter-input-safe.txt \
-            filter/filter-input-strict.txt \
-            filter/domains.json \
-            filter/dnscrypt-proxy.toml.template \
-            filter/forward-rules.txt.template \
-            filter/LICENSE.dnscrypt-proxy.txt \
-            scripts/common.sh \
-            scripts/keeper.sh \
-            scripts/guard.sh \
-            scripts/apply.sh \
-            scripts/rollback.sh; do
-            if [ ! -f "$tmp/$appdir/$f" ]; then
-              echo "::error::missing in IPK: $appdir/$f"
-              exit 1
-            fi
-          done
-          # The binary must survive packaging byte-for-byte (pin lives in tools/fetch-filter.mjs).
-          pin="$(node -e "const s=require('node:fs').readFileSync('tools/fetch-filter.mjs','utf8');const m=s.match(/const BIN_SHA256 = '([0-9a-f]{64})'/);if(!m)process.exit(1);console.log(m[1])")"
-          got="$(sha256sum "$tmp/$appdir/filter/dnscrypt-proxy" | cut -d' ' -f1)"
-          if [ "$got" != "$pin" ]; then
-            echo "::error::IPK filter binary sha256 $got != pin $pin"
-            exit 1
-          fi
-          # ares-package normalizes all modes to 666 (verified 2026-09-22), so the
-          # package can never carry the exec bit. The runtime mitigation lives in
-          # common.sh (`chmod +x "$FILTER_BIN"` before every filter start) — assert
-          # the packaged copy still has it.
-          if ! grep -q 'chmod +x "$FILTER_BIN"' "$tmp/$appdir/scripts/common.sh"; then
-            echo "::error::packaged common.sh lost the chmod +x filter mitigation"
-            exit 1
-          fi
-          echo "IPK contents OK — filter binary sha256 $got (byte-identical to pin), runtime scripts present"
+          python3 -B - <<'PY'
+          import hashlib
+          import io
+          import json
+          from pathlib import Path
+          import re
+          import tarfile
+
+          ipks = list(Path('dist').glob('*.ipk'))
+          assert len(ipks) == 1, 'expected exactly one generated IPK'
+          blob = ipks[0].read_bytes()
+          assert blob[:8] == b'!<arch>\n'
+          offset, members = 8, {}
+          for expected in ('debian-binary', 'control.tar.gz', 'data.tar.gz'):
+              header = blob[offset:offset + 60]
+              assert len(header) == 60 and header[58:] == b'`\n'
+              assert header[:16].decode().strip() == expected
+              assert (int(header[16:28]), int(header[28:34]), int(header[34:40]), int(header[40:48], 8)) == (0, 0, 0, 0o100644)
+              size = int(header[48:58])
+              members[expected] = blob[offset + 60:offset + 60 + size]
+              assert len(members[expected]) == size
+              if size % 2:
+                  assert blob[offset + 60 + size:offset + 61 + size] == b'\n'
+              offset += 60 + size + size % 2
+          assert offset == len(blob) and members['debian-binary'] == b'2.0\n'
+          appdir = 'usr/palm/applications/io.github.furkanbayrak.lgtvblocklist/'
+          pkginfo = 'usr/palm/packages/io.github.furkanbayrak.lgtvblocklist/packageinfo.json'
+          source = {appdir + p.relative_to('app').as_posix(): p.read_bytes()
+                    for p in Path('app').rglob('*') if p.is_file()}
+          executables = {appdir + 'filter/dnscrypt-proxy'} | {
+              appdir + 'scripts/' + p.name for p in Path('app/scripts').glob('*.sh')}
+          files = {}
+          for name in ('control.tar.gz', 'data.tar.gz'):
+              compressed = members[name]
+              assert compressed[3:8] == b'\0' * 5, 'gzip flags/time not normalized'
+              seen = set()
+              with tarfile.open(fileobj=io.BytesIO(compressed), mode='r:gz') as archive:
+                  for member in archive:
+                      assert member.name not in seen, 'duplicate tar path'
+                      seen.add(member.name)
+                      assert member.type in (tarfile.REGTYPE, tarfile.DIRTYPE)
+                      assert (member.uid, member.gid, member.uname, member.gname, member.mtime) == (0, 0, 'root', 'root', 0)
+                      mode = 0o755 if member.isdir() or member.name in executables else 0o644
+                      assert member.mode == mode, (member.name, oct(member.mode))
+                      if member.isfile():
+                          files[(name, member.name)] = archive.extractfile(member).read()
+          assert {p for archive, p in files if archive == 'control.tar.gz'} == {'control'}
+          packaged = {p: b for (archive, p), b in files.items() if archive == 'data.tar.gz'}
+          assert set(packaged) == set(source) | {pkginfo}
+          for path, payload in source.items():
+              assert hashlib.sha256(packaged[path]).digest() == hashlib.sha256(payload).digest(), path
+          info = json.loads(packaged[pkginfo])
+          appinfo = json.loads(source[appdir + 'appinfo.json'])
+          assert all(info[key] == appinfo[key] for key in ('id', 'version'))
+          pin = re.search(r"const BIN_SHA256 = '([0-9a-f]{64})'", Path('tools/fetch-filter.mjs').read_text()).group(1)
+          assert hashlib.sha256(packaged[appdir + 'filter/dnscrypt-proxy']).hexdigest() == pin
+          assert b'chmod +x "$FILTER_BIN"' in packaged[appdir + 'scripts/common.sh']
+          print('IPK metadata OK: root ownership, 0755 dirs/helpers/filter, 0644 assets/control/packageinfo; all payload hashes unchanged')
+          PY
 
       - name: Install webosbrew toolbox (gen-manifest, ipk-verify, firmware data)
         run: |

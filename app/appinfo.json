@@ -8,5 +8,5 @@
   "main": "index.html",
   "iconColor": "#141419",
   "type": "web",
-  "appDescription": "One-switch DNS blocking for rooted LG webOS TVs (companion to the lg-tv-blocklist project). Bridge + live status (S2); no blocking yet."
+  "appDescription": "Experimental DNS blocking with SAFE/STRICT profiles for rooted LG webOS TVs via the Homebrew Channel."
 }
