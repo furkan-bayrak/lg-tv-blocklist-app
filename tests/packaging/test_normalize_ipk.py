@@ -422,8 +422,19 @@ class NormalizeTests(unittest.TestCase):
         failed = subprocess.run(command, cwd=base, capture_output=True, text=True)
         self.assertNotEqual(failed.returncode, 0)
         self.assertIn(APP + "/index.html", failed.stderr)
-        # It must also independently reject the packager's unsafe original metadata.
-        ipk.write_bytes(fixture())
+        # Restore matching source so payload rejection cannot mask missing metadata checks.
+        (base / "app/index.html").write_bytes(FILES[APP + "/index.html"])
+        self.assertEqual(
+            (base / "app/index.html").read_bytes(), FILES[APP + "/index.html"]
+        )
+        # Keep the control path canonical: only metadata should cause rejection.
+        ipk.write_bytes(
+            fixture(
+                control=[
+                    entry("control", b"Package: io.github.furkanbayrak.lgtvblocklist\n")
+                ]
+            )
+        )
         failed = subprocess.run(command, cwd=base, capture_output=True, text=True)
         self.assertNotEqual(failed.returncode, 0)
         self.assertIn("AssertionError", failed.stderr)
