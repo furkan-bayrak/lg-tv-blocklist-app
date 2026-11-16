@@ -232,25 +232,23 @@ test('tier changes re-derive coverage from the newly reported states', () => {
 
 test('attention: zero entries is the strongest state, below half is a notice', () => {
   const { api, domains } = loadView();
-  assert.equal(domains.presetEntries.safe, 20);
-  assert.equal(domains.presetEntries.strict, 123);
-  // SAFE: 0 empty, 1..9 low (9*2 < 20), 10.. ok.
-  assert.equal(api.attention(0, 'safe'), 'empty');
-  assert.equal(api.attention(1, 'safe'), 'low');
-  assert.equal(api.attention(9, 'safe'), 'low');
-  assert.equal(api.attention(10, 'safe'), 'ok');
-  assert.equal(api.attention(20, 'safe'), 'ok');
-  // STRICT: half of 123 is 61.5, so 61 is still low and 62 is ok.
-  assert.equal(api.attention(0, 'strict'), 'empty');
-  assert.equal(api.attention(61, 'strict'), 'low');
-  assert.equal(api.attention(62, 'strict'), 'ok');
+  for (const tier of ['safe', 'strict']) {
+    const preset = domains.presetEntries[tier];
+    const half = Math.ceil(preset / 2);
+    assert.ok(preset > 2, 'bundled preset supports a non-empty below-half state');
+    assert.equal(api.attention(0, tier), 'empty');
+    assert.equal(api.attention(1, tier), 'low');
+    assert.equal(api.attention(half - 1, tier), 'low');
+    assert.equal(api.attention(half, tier), 'ok');
+    assert.equal(api.attention(preset, tier), 'ok');
+  }
   // The wording is the UI's own and names the count and the preset.
   const empty = api.attentionMessage('empty', 'safe', 0);
   assert.ok(empty.includes('0'));
   assert.ok(empty.includes('Nothing is blocked'), 'strongest wording: ' + empty);
   const low = api.attentionMessage('low', 'strict', 5);
-  assert.ok(low.includes('5') && low.includes('123') && low.includes('STRICT'));
-  assert.equal(api.attentionMessage('ok', 'strict', 123), '');
+  assert.ok(low.includes('5') && low.includes(String(domains.presetEntries.strict)) && low.includes('STRICT'));
+  assert.equal(api.attentionMessage('ok', 'strict', domains.presetEntries.strict), '');
   // An unreadable count is never healthy (F5): 'unknown' (which the caller
   // renders as a visible degraded state), never a confident 'ok'.
   assert.equal(api.attention(-1, 'safe'), 'unknown');

@@ -21,10 +21,22 @@ if [ -L "$HOOK_LINK" ]; then
   else
     hook_target=none
   fi
+elif [ -e "$HOOK_LINK" ]; then
+  # A regular file/directory is a conflict too, never an absent hook.
+  hook=other
 fi
 
-scripts=missing
-[ -f "$SELF_DIR/boot.sh" ] && [ -f "$SELF_DIR/check.sh" ] && scripts=ok
+scripts=ok
+# Report package usability, not just the presence of two entrypoints. These
+# are fixed packaged paths, independent of host-test resolver overrides.
+for component in common.sh apply.sh rollback.sh boot.sh keeper.sh guard.sh check.sh startup.sh tier.sh overrides.sh dnsq.sh; do
+  if [ ! -f "$SELF_DIR/$component" ] || [ ! -r "$SELF_DIR/$component" ] || [ ! -x "$SELF_DIR/$component" ]; then scripts=missing; fi
+done
+[ -f "$SELF_DIR/dnsq.js" ] && [ -r "$SELF_DIR/dnsq.js" ] || scripts=missing
+[ -f "$APP_DIR/filter/dnscrypt-proxy" ] && [ -x "$APP_DIR/filter/dnscrypt-proxy" ] || scripts=missing
+for component in dnscrypt-proxy.toml.template forward-rules.txt.template filter-input.txt filter-input-safe.txt filter-input-strict.txt domains.json; do
+  [ -f "$APP_DIR/filter/$component" ] && [ -r "$APP_DIR/filter/$component" ] || scripts=missing
+done
 
 filter=down
 filter_running && filter=up

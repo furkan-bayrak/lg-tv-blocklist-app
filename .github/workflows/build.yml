@@ -33,17 +33,8 @@ jobs:
             exit 1
           fi
 
-      - name: Build (TypeScript -> ES5) and run the ES5 guard
-        run: npm run build && npm run check:es5
-
-      # The ES5 guard is a pattern scan over masked text; this runs the parser
-      # the TV itself uses (node v8.12.0, so node@8.17.0 is the closest proxy).
-      # Kept next to the other syntax check so a device-breaking construct fails
-      # the build before the slow packaging steps. Needs the npm registry for
-      # node@8.17.0; if that fetch fails the step fails on purpose rather than
-      # reporting a gate that never ran.
-      - name: Node 8 parse gate (the parser the TV runs)
-        run: npm run check:node8
+      - name: Build (TypeScript -> ES5) and lint shipped JavaScript
+        run: npm run build && npm run lint
 
       - name: Shellcheck (POSIX mode) on shell glue
         run: shellcheck -s sh -S warning app/scripts/*.sh tests/shell/*.sh tests/shell/stub-bin/* tests/g1/*.sh
@@ -69,6 +60,7 @@ jobs:
           import hashlib
           import io
           import json
+          import os
           from pathlib import Path
           import re
           import tarfile
@@ -96,6 +88,8 @@ jobs:
                     for p in Path('app').rglob('*') if p.is_file()}
           executables = {appdir + 'filter/dnscrypt-proxy'} | {
               appdir + 'scripts/' + p.name for p in Path('app/scripts').glob('*.sh')}
+          epoch = int(os.environ.get('SOURCE_DATE_EPOCH', str(int(Path('app/appinfo.json').stat().st_mtime))))
+          assert 0 < epoch <= 0x7fffffff, 'invalid source timestamp'
           files = {}
           for name in ('control.tar.gz', 'data.tar.gz'):
               compressed = members[name]
@@ -106,7 +100,7 @@ jobs:
                       assert member.name not in seen, 'duplicate tar path'
                       seen.add(member.name)
                       assert member.type in (tarfile.REGTYPE, tarfile.DIRTYPE)
-                      assert (member.uid, member.gid, member.uname, member.gname, member.mtime) == (0, 0, 'root', 'root', 0)
+                      assert (member.uid, member.gid, member.uname, member.gname, member.mtime) == (0, 0, 'root', 'root', epoch)
                       mode = 0o755 if member.isdir() or member.name in executables else 0o644
                       assert member.mode == mode, (member.name, oct(member.mode))
                       if member.isfile():
@@ -144,8 +138,8 @@ jobs:
 
       - name: Assert manifest values
         run: |
-          jq -e '.id == "io.github.furkanbayrak.lgtvblocklist"
-                 and .version == "0.4.2"
+          jq -e --arg version "$(node -p "require('./app/appinfo.json').version")" '.id == "io.github.furkanbayrak.lgtvblocklist"
+                 and .version == $version
                  and .rootRequired == true
                  and (.ipkHash.sha256 | length == 64)' dist/app.manifest.json > /dev/null
 

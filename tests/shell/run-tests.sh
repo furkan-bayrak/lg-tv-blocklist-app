@@ -11,7 +11,6 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-CHECK="$REPO/app/scripts/check.sh"
 SH="$(command -v sh || true)"
 [ -n "$SH" ] || SH=/bin/sh
 
@@ -124,10 +123,14 @@ trap on_signal INT TERM
 
 new_sandbox() {
   SB="$(mktemp -d "$SB_ROOT/sb.XXXXXX")"
-  mkdir -p "$SB/appdir/scripts" "$SB/hookdir"
-  cp "$CHECK" "$REPO/app/scripts/common.sh" "$SB/appdir/scripts/"
-  : > "$SB/appdir/scripts/boot.sh"
-  chmod +x "$SB/appdir/scripts/check.sh"
+  mkdir -p "$SB/appdir/scripts" "$SB/appdir/filter" "$SB/hookdir"
+  cp "$REPO"/app/scripts/* "$SB/appdir/scripts/"
+  chmod +x "$SB"/appdir/scripts/*.sh
+  # Readiness checks package presence, never executes these placeholder assets.
+  for component in dnscrypt-proxy dnscrypt-proxy.toml.template forward-rules.txt.template filter-input.txt filter-input-safe.txt filter-input-strict.txt domains.json; do
+    : > "$SB/appdir/filter/$component"
+  done
+  chmod +x "$SB/appdir/filter/dnscrypt-proxy"
 }
 
 run_check() {  # run_check <hook_dir> [PATH]; default PATH has no iptables (cap=unsupported)
@@ -325,6 +328,9 @@ new_app_sandbox() {
   cp "$FILTER_SRC/dnscrypt-proxy.toml.template" "$FILTER_SRC/forward-rules.txt.template" "$FILTER_SRC/filter-input.txt" "$FILTER_SRC/domains.json" "$SB/appdir/filter/"
   cp "$STUBBIN/iptables" "$STUBBIN/luna-send" "$STUBBIN/dnsq" "$STUBBIN/node" "$STUBBIN/fake-dnscrypt-proxy" "$STUBBIN/fake-dnscrypt-proxy-dead" "$SB/bin/"
   chmod +x "$SB/appdir/scripts/apply.sh" "$SB/appdir/scripts/rollback.sh" "$SB/appdir/scripts/keeper.sh" "$SB/appdir/scripts/guard.sh" "$SB/appdir/scripts/check.sh" "$SB/appdir/scripts/boot.sh" "$SB/appdir/scripts/dnsq.sh" "$SB/appdir/scripts/tier.sh" "$SB/appdir/scripts/overrides.sh" "$SB/bin/iptables" "$SB/bin/luna-send" "$SB/bin/dnsq" "$SB/bin/node" "$SB/bin/fake-dnscrypt-proxy" "$SB/bin/fake-dnscrypt-proxy-dead"
+  cp "$SCRIPTS_SRC/startup.sh" "$SCRIPTS_SRC/dnsq.js" "$SB/appdir/scripts/"
+  chmod +x "$SB"/appdir/scripts/*.sh
+  cp "$SB/bin/fake-dnscrypt-proxy" "$SB/appdir/filter/dnscrypt-proxy"
   # S4/T3: default "filter listening" fixture for the keeper's cheap probe
   # (port 5335 = 0x14D7, local 127.0.0.1, state 0A = LISTEN). Tests that need
   # "device without the port" overwrite this file after new_app_sandbox.
@@ -501,6 +507,13 @@ exit_check() {  # exit_check <name> <pid> <max 0.2s iterations> — process must
   while [ "$n" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do sleep 0.2; n=$((n+1)); done
   if kill -0 "$2" 2>/dev/null; then no "$1" "still alive (pid $2)"; else ok "$1"; fi
 }
+
+# Trial safety scenarios share this harness; all firewall calls remain stubbed.
+. "$HERE/trial-safety.sh"
+if [ "${LGTVB_SAFETY_ONLY:-}" = uninstall ]; then
+  printf '\n%s passed, %s failed\n' "$pass" "$fail"
+  [ "$fail" -eq 0 ]; exit $?
+fi
 
 # Disable/recovery regressions. All commands run in the existing sandbox; the
 # upstream FIFO is a deterministic barrier, not a network operation or timer.
@@ -1086,7 +1099,7 @@ schema=4
 ts=<TS>
 hook=missing
 hook_target=none
-scripts=ok
+scripts=missing
 filter=down
 rule=absent
 keeper=down
@@ -1121,7 +1134,7 @@ schema=4
 ts=<TS>
 hook=missing
 hook_target=none
-scripts=ok
+scripts=missing
 filter=up
 rule=on
 keeper=up
@@ -1156,7 +1169,7 @@ schema=4
 ts=<TS>
 hook=other
 hook_target=none
-scripts=ok
+scripts=missing
 filter=down
 rule=absent
 keeper=down
@@ -1178,7 +1191,7 @@ schema=4
 ts=<TS>
 hook=other
 hook_target=none
-scripts=ok
+scripts=missing
 filter=down
 rule=absent
 keeper=down
@@ -1204,7 +1217,7 @@ schema=4
 ts=<TS>
 hook=missing
 hook_target=none
-scripts=ok
+scripts=missing
 filter=down
 rule=off
 keeper=down
@@ -1425,12 +1438,10 @@ if cmp -s "$SB/state/filter-input.txt" "$SB/appdir/filter/filter-input-strict.tx
 if ! cmp -s "$SB/appdir/filter/filter-input-safe.txt" "$SB/appdir/filter/filter-input-strict.txt"; then ok "tier strict: presets differ (non-vacuous)"; else no "tier strict: presets differ (non-vacuous)" "safe == strict"; fi
 if grep -q '^[a-z]' "$SB/state/filter-input.txt" && ! grep -q '^[a-z]' "$SB/appdir/filter/filter-input-safe.txt"; then ok "tier strict: zone anchors present in strict only"; else no "tier strict: zone anchors present in strict only" "strict anchors: $(grep -c '^[a-z]' "$SB/state/filter-input.txt")"; fi
 run_check_nostub
-# S6b review F3: the count is derived from the materialized strict list (its 115
-# exact rules + its 8 bare zone anchors = 123 entries, and the comments do not count).
+# The count includes exact rules and bare zone anchors, never comments.
 strict_entries="$(entry_count "$SB/state/filter-input.txt")"
 if printf '%s\n' "$OUT" | grep -qx "entries=$strict_entries"; then ok "entries: STRICT reports the materialized list's real count ($strict_entries)"; else no "entries: STRICT reports the materialized list's real count" "want entries=$strict_entries, got $(printf '%s\n' "$OUT" | grep '^entries=')"; fi
-# Same equality for the other tier: 115 exact rules + 8 bare zone anchors, as the
-# UI module carries it.
+# The UI module must carry the same count for this preset.
 md_strict="$(module_preset_entry_count strict)"
 if [ -n "$md_strict" ] && [ "$md_strict" = "$strict_entries" ]; then ok "domains.gen.ts: presetEntries.strict ($md_strict) == check.sh entries=strict"; else no "domains.gen.ts: presetEntries.strict == check.sh entries" "module=[$md_strict] check=[$strict_entries]"; fi
 assert_block "tier strict: check.sh block (schema 4, entries last)" "@@STATUS-BEGIN
@@ -1449,7 +1460,7 @@ mode=degraded
 upstream=none
 cap=unsupported
 tier=strict
-entries=123
+entries=$strict_entries
 @@STATUS-END"
 cleanup_app_sandbox
 
@@ -1463,8 +1474,8 @@ if jrnl 'materialize-fallback reason=no-tier-file tier=strict'; then ok "tier fa
 cleanup_app_sandbox
 
 # --- T2 case 3b (review F1): a PARTIAL tier install must never fall back -----
-# The legacy filter-input.txt IS the strict list (123 entries incl. 8 zone
-# anchors). With the old unconditional fallback, deleting the SAFE preset on a
+# The legacy filter-input.txt IS the strict list, including zone anchors.
+# With the old unconditional fallback, deleting the SAFE preset on a
 # SAFE-state TV silently materialized the aggressive list while state, check.sh
 # and the panel all said safe. Exactly one tier file missing = damaged install:
 # materialize must fail (callers fail open) and name the reason in the journal.
@@ -2132,8 +2143,8 @@ ov_no_tmp "list: no scratch file left behind"
 cleanup_app_sandbox
 
 # --- T5 case 2: the preset is the ACTIVE TIER's list --------------------------
-# 20 safe rows + 8 zone anchors live in the strict presets only; everything else
-# is a strict-only row. A list built from the wrong preset would show them wrong.
+# SAFE rows are a subset of the strict preset; zone anchors are strict-only.
+# A list built from the wrong preset would show their state incorrectly.
 tier_sandbox
 printf 'tier=safe\n' > "$SB/state/state"
 ov_run list
@@ -2379,8 +2390,8 @@ cleanup_app_sandbox
 # --- T5 case 14 (review F1a/F2): reject-last is a property of EVERY preset -----
 # The refusal is not "does the ACTIVE list still have entries". The stored diff is
 # a diff against whatever tier is active, so a tier switch re-baselines it: under
-# STRICT, turning the 20 SAFE rows off leaves 95 of 115 exact rules (plus 8
-# anchors) — a diff the old active-only check accepted without a word — but
+# STRICT, turning every SAFE row off still leaves strict-only rules and anchors
+# — a diff the old active-only check accepted without a word — but
 # `tier.sh safe` would then materialize the SAFE preset minus those rows, i.e. a
 # comment-only list, and the panel would report protection while nothing was
 # blocked. save therefore asks the question of every shipped preset and refuses
@@ -2413,8 +2424,8 @@ if grep -q 'refusing to turn off the last blocked domain' "$SB/stderr" 2>/dev/nu
 if cmp -s "$SB/state/overrides.txt" "$SB/ov-keep.txt"; then ok "cross-tier: the stored diff is byte-identical after the refusal"; else no "cross-tier: the stored diff is byte-identical" "[$(tr '\n' ' ' < "$SB/state/overrides.txt" 2>/dev/null)]"; fi
 ov_no_tmp "cross-tier: no scratch file left behind"
 # The counterfactual the old active-only check accepted, stated as a number: the
-# same payload leaves the ACTIVE STRICT list with rows (115 - 20 exact rules + 8
-# anchors), so only the SAFE check can be what refused it.
+# same payload leaves the ACTIVE STRICT list with strict-only rules and anchors,
+# so only the SAFE check can be what refused it.
 ov_strict_left=$(grep -c '^=' "$SB/appdir/filter/filter-input-strict.txt" | tr -d ' ')
 if [ "$((ov_strict_left - ov_safe_n))" -gt 0 ]; then ok "cross-tier: the STRICT list would still hold $((ov_strict_left - ov_safe_n)) exact rules (active-only check would have passed it)"; else no "cross-tier: the STRICT counterfactual is non-empty" "$ov_strict_left - $ov_safe_n"; fi
 # And the same payload against the ACTIVE SAFE tier is refused the same way.

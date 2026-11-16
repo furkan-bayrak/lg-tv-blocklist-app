@@ -22,6 +22,14 @@ trap 'exit 130' INT TERM HUP
 empty=0
 while :; do
   sleep "$GUARD_TICK"
+  # Uninstall has no callback. Even a live/stalled keeper must not keep DNS
+  # redirected after its package disappears. All cleanup code is already loaded.
+  if [ ! -d "$APP_DIR" ]; then
+    lock_try_acquire || continue
+    if fail_open_terminal "app-removed"; then exit 0; fi
+    lock_release
+    continue
+  fi
   kpid=$(cat "$STATE/keeper.pid" 2>/dev/null)
   if [ -n "$kpid" ]; then
     if ! pid_alive "$kpid" keeper; then

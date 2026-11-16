@@ -4,12 +4,15 @@ Companion app to [furkan-bayrak/lg-tv-blocklist](https://github.com/furkan-bayra
 one switch to stop LG ads and telemetry on a rooted LG webOS TV, installed from
 the Homebrew Channel. No server, no extra hardware, no router changes.
 
-**Status: beta — v0.4.2.** DNS-layer blocking is implemented and working on a
-rooted LG G1 (webOS 6.x): bundled filtering engine, apply/rollback, keeper + guard
-supervision, boot auto-start, and fail-open behavior. The Safe/Strict tiers (a
-fresh install defaults to SAFE) and the per-domain list are implemented;
-self-update, first-run/help UX, and a store listing are not built yet. Evidence on
-a real TV (LG G1, webOS 6 — see `docs/test-evidence/`).
+**Status: experimental — v0.4.3, local trial candidate.** Plain first-launch
+prerequisite checks, SAFE/STRICT profiles, domain overrides, verified cleanup
+and a startup setting are implemented. Fresh installs remain SAFE and OFF.
+Earlier versions have LG G1/webOS 6 evidence in `docs/test-evidence/`; that does
+not establish acceptance of these new bytes. Human safety review and a supervised
+LG smoke check gate the 24-hour SAFE trial. No automatic updater or store listing.
+
+Local candidate instructions and safety/device gates:
+[0.4.3 host evidence and supervised LG trial](docs/test-evidence/2026-11-11-0.4.3-host-and-lg-trial.md).
 
 ## What exists today
 
@@ -21,34 +24,39 @@ a real TV (LG G1, webOS 6 — see `docs/test-evidence/`).
   `/var/lib/webosbrew/init.d/` (never copied — webosbrew store rule)
 - `app/scripts/` blocking layer — `apply.sh`/`rollback.sh` (apply + rollback),
   `keeper.sh` + `guard.sh` (supervisor pair), plus the bundled filtering engine
-- `tools/check-es5.mjs` — build check: the compiled bundle stays conservative ES5.
-  A heuristic pattern scan over a masked copy of `app/js`, `app/scripts` (both
-  walked recursively) plus the `src/` plain-script guard — not an ES5 parser: it
-  fails closed on input it cannot read and refuses a control keyword used as a
-  property name, but an OK line means "nothing on the pattern list matched",
-  never "this file is ES5", and the header names the misses measured so far
-- `tools/check-node8.mjs` — `npm run check:node8`: runs the real node v8.17.0 parser
-  (`--check`) over every shipped `.js` file, the closest proxy for the TV's node
-  v8.12.0. Ground truth for the syntax node 8 refuses, and only that: node 8 also
-  parses ES6, so measured `var f = () => 1;` is `--check` rc 0, and a named
-  capture group passes `--check` too and throws only when the literal is
-  compiled. The two gates cover different classes, so CI runs both and neither
-  makes the other redundant.
-  It fetches node@8.17.0 from the registry, so it is a CI step rather than part of
-  `npm test`; offline, `CHECK_NODE8_ALLOW_SKIP=1` reports UNVERIFIED instead of
-  failing (the default is to fail, never to pass silently)
-- `.github/workflows/build.yml` — CI: build, package, Homebrew manifest
-  (`rootRequired: true` in the manifest), ES5 pattern guard + node 8 parse gate,
-  `webosbrew-ipk-verify` compatibility report
+- `app/scripts/guard.sh` — runtime fail-open watchdog, not a syntax checker or
+  linter. It supervises protection on the TV alongside `keeper.sh`; development
+  checks do not replace it.
+- `eslint.config.mjs` — development syntax check via `npm run lint`: ESLint
+  parses all shipped JavaScript (`app/**/*.js`, including generated `app/js`,
+  TV-side helpers and vendored scripts) as ES5 scripts. The webview bundle also
+  rejects CommonJS globals: it is loaded by plain `<script>` tags, not a module
+  loader. TypeScript's `module: "none"` keeps sources as plain scripts.
+  This replaces the custom pattern scanner and Node 8 download/parse gate:
+  ES5 parsing already rejects the newer syntax Node 8 cannot parse.
+  Syntax checks do not prove runtime API support or replace testing on a TV.
+- `.github/workflows/build.yml` — CI: build, ESLint, tests, package, Homebrew
+  manifest (`rootRequired: true`), `webosbrew-ipk-verify` compatibility report
 
 ## Build
 
-Requires Node.js 20+ (22 recommended).
+Requires Node.js 20.19+ (20.x), 22.13+ (22.x), or 24+; Node 22 is recommended.
 
 ```sh
 npm ci
-npm run dist   # -> dist/io.github.furkanbayrak.lgtvblocklist_0.4.2_all.ipk
+npm run dist   # -> dist/io.github.furkanbayrak.lgtvblocklist_0.4.3_all.ipk
 ```
+
+For development, `npm run build && npm run lint` checks the emitted JavaScript
+and TV-side helpers without packaging. ESLint does not use `.gitignore`, so the
+ignored `app/js/` build output is checked. Required globs for `app/js` and
+`app/scripts` make missing or empty trees an error; build before linting.
+`npm test` includes this check, then runs the application and packaging tests.
+
+Packaging preserves a valid deterministic tar date: `SOURCE_DATE_EPOCH` if set
+(positive 32-bit seconds), otherwise the source `app/appinfo.json` mtime.
+Preserve that mtime when reproducing a frozen source snapshot. Epoch-zero file
+dates are rejected by webOS installation; gzip/ar headers can still be zeroed.
 
 ## Design
 
@@ -57,14 +65,13 @@ summary). Mechanics live in the design spec.
 
 ## Tiers and the domain list
 
-- **SAFE (default) vs STRICT.** A fresh install runs SAFE: 20 high-confidence
-  entries. STRICT is the aggressive tier on top of it: 115 distinct domains,
-  materialised as 123 entries once its 8 zone anchors are repeated as bare
-  whole-zone rules. STRICT may degrade the LG store, break LG account login, and
+- **SAFE (default) vs STRICT.** A fresh install selects SAFE, with protection OFF.
+  The app displays bundled-list revision/date and the active preset’s entry count.
+  STRICT adds aggressive domains and whole-zone rules. STRICT may degrade the LG store, break LG account login, and
   stop ThinQ, LG Channels and firmware updates from working - that is the tier's
   purpose, not a bug. STRICT is selectable at any time; switching re-applies the
   filter and can briefly interrupt DNS.
-- **Zone anchors.** The 8 zone rows can be switched on or off in either tier, but
+- **Zone anchors.** Zone rows can be switched on or off in either tier, but
   they mean different things. Under STRICT a zone anchor blocks the whole zone;
   under SAFE the same row blocks only its own name. The panel's per-row note
   states this for the active tier.
@@ -85,12 +92,36 @@ summary). Mechanics live in the design spec.
   [furkan-bayrak/lg-tv-blocklist](https://github.com/furkan-bayrak/lg-tv-blocklist),
   licensed **CC BY 4.0**; they ship with this app under that attribution.
 
+### Reported firmware-update domains
+
+[Issue #1](https://github.com/furkan-bayrak/lg-tv-blocklist-app/issues/1) reports
+that blocking `su-dev.lge.com` and `nsu.lge.com` stopped updates on webOS 25
+(10.3.2-33). The bundled STRICT preset already covers both: it has an exact
+`=su-dev.lge.com` rule and a whole-zone `lge.com` rule covering `nsu.lge.com`.
+`nsu.lge.com` is distinct from the separately listed `snu.lge.com`; neither name
+should be silently substituted for the other.
+
+SAFE intentionally blocks neither of these update hosts. If the STRICT
+`lge.com` zone is disabled, `su-dev.lge.com` still has its own exact rule unless
+that row is also disabled, but `nsu.lge.com` has no separate exact rule or row.
+Do not enable the broad STRICT tier just to control updates: use LG/Homebrew
+update settings. This is snapshot coverage, not a new device test or a guarantee
+that DNS blocking prevents every firmware-update path.
+
 ## Limits (honest, day one)
 
 - Requires root + the Homebrew Channel.
-- Blocking and the Safe/Strict tiers plus the domain list are implemented;
-  self-update and the restore/first-run UX are still to come.
-- Tested on a real TV: see `docs/test-evidence/`.
+- Launch automatically checks Homebrew root access and required package components;
+  mutations stay unavailable when readiness cannot be confirmed. Connection failure
+  is not reported as proof that root is missing.
+- **Start protection after reboot** controls only this app’s startup link. It
+  resumes the saved ON/OFF intent; changing it does not enable protection now.
+- **Disable and remove startup** asks for confirmation, verifies protection OFF
+  before removing the owned startup link, and retains domain preferences. Keep the
+  app installed if cleanup cannot be confirmed. Foreign startup files are not changed.
+- Raw bridge/status diagnostics are under **Advanced**.
+- Automatic updates and Homebrew publication are out of scope for this trial.
+- Earlier real-TV evidence is not a pass for the current candidate.
 
 ## License
 

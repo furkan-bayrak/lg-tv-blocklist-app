@@ -91,6 +91,40 @@
   var nav: HTMLElement[] = [];
   var focusIndex = 0;
   var busy = false;
+  var ready = false;
+  var rootConfirmed = false;
+  var cleanupOpen = false;
+  var advancedOpen = false;
+  var startupButton = el('btn-startup') as HTMLButtonElement;
+  var cleanupButton = el('btn-cleanup') as HTMLButtonElement;
+
+  function syncControls(): void {
+    var blocked = busy || !ready;
+    protectButton.disabled = blocked || protectAction === null || protectAction === 'blocked';
+    tierSafeButton.disabled = blocked;
+    tierStrictButton.disabled = blocked;
+    domainsApplyButton.disabled = blocked || !domainState;
+    domainsResetButton.disabled = blocked || !domainState;
+    startupButton.disabled = blocked || !lastBlock || lastBlock.hook === 'other';
+    cleanupButton.disabled = blocked;
+    (el('btn-cleanup-confirm') as HTMLButtonElement).disabled = blocked;
+    domainsConfirmButton.disabled = blocked;
+    for (var i = 0; i < rowOrder.length; i++) {
+      rowParts[rowOrder[i]].button.disabled = blocked;
+    }
+    rebuildNav();
+  }
+
+  function renderStartup(): void {
+    var hook = lastBlock ? lastBlock.hook : null;
+    startupButton.textContent = 'Start protection after reboot: ' +
+      (hook === 'linked' ? 'ON' : hook === 'missing' ? 'OFF' : hook === 'other' ? 'conflict' : 'unknown');
+    startupButton.setAttribute('aria-pressed', hook === 'linked' ? 'true' : 'false');
+    el('startup-note').textContent = hook === 'other'
+      ? 'Another file owns the startup path. It will not be overwritten or removed. Check Advanced.'
+      : hook === null ? 'Startup could not be read. Refresh status before making changes.'
+      : 'Uses your saved protection choice after reboot. Current protection is shown above.';
+  }
 
   // What the protection button does right now; null until the first status
   // block arrives (or while the TV state could not be read).
@@ -125,7 +159,12 @@
 
   function show(statusText: string, bodyText: string): void {
     statusLine.textContent = statusText;
+    syncControls();
     output.textContent = bodyText;
+    el('summary').textContent = lastBlock
+      ? 'Protection ' + modeLabel(lastBlock) + ' · ' + tierLabel(lastBlock.tier) +
+        ' · ' + entriesLine(lastBlock)
+      : 'Protection state unknown — no settings changed by checking.';
   }
 
   function formatExec(response: HbExecResponse): string {
@@ -142,11 +181,6 @@
     return parts.join('\n\n');
   }
 
-  function showExecResult(label: string, response: HbExecResponse): void {
-    var verdict = response.returnValue ? 'done' : 'FAILED';
-    show(label + ': ' + verdict, formatExec(response));
-  }
-
   function rawPreview(raw: string): string {
     var LIMIT = 2000;
     if (raw.length <= LIMIT) {
@@ -155,17 +189,23 @@
     return raw.substring(0, LIMIT) + '\n…(truncated)';
   }
 
-  function runGuarded(action: () => void): void {
+  function runGuarded(action: () => void, readOnly?: boolean): void {
     if (busy) {
       show('Busy', 'A command is already running — wait for it to finish.');
       return;
     }
+    if (!readOnly && !ready) {
+      show('Not ready', 'Refresh status and resolve the prerequisite message before making changes.');
+      return;
+    }
     busy = true;
+    syncControls();
     action();
   }
 
   function finish(): void {
     busy = false;
+    syncControls();
   }
 
   // ---- focus order -----------------------------------------------------------
@@ -176,6 +216,10 @@
   // never be reached by an arrow key.
   function rebuildNav(): void {
     var next: HTMLElement[] = [protectButton, tierSafeButton, tierStrictButton];
+    next.push(startupButton, cleanupButton);
+    if (cleanupOpen) {
+      next.push(el('btn-cleanup-confirm'), el('btn-cleanup-cancel'));
+    }
     if (confirmOpen) {
       next.push(domainsConfirmButton, domainsCancelButton);
     } else {
@@ -192,8 +236,13 @@
         next.push(rowParts[rowOrder[i]].button);
       }
     }
-    next.push(el('btn-refresh'), el('btn-check'), el('btn-state'), el('btn-register'), el('btn-remove'));
-    nav = next;
+    next.push(el('btn-refresh'), el('btn-advanced'));
+    if (advancedOpen) {
+      next.push(el('btn-check'), el('btn-state'));
+    }
+    nav = next.filter(function (node: HTMLElement): boolean {
+      return !(node as HTMLButtonElement).disabled;
+    });
     var active: Element | null = document.activeElement || null;
     var index = active ? nav.indexOf(active as HTMLElement) : -1;
     focusIndex = index === -1 ? 0 : index;
@@ -1201,19 +1250,7 @@
   }
 
   function checkBridge(): void {
-    runGuarded(function (): void {
-      if (!LgBlocklistBridge.available()) {
-        show('Bridge unavailable', LgBlocklistBridge.diagnose());
-        finish();
-        return;
-      }
-      show('Checking bridge...', 'Calling getConfiguration (may take a moment after boot).');
-      LgBlocklistBridge.getConfiguration(function (config: HbConfiguration): void {
-        finish();
-        var healthy = config.root ? 'root access confirmed' : 'root NOT available';
-        show('Bridge: ' + healthy, JSON.stringify(config, null, 2));
-      });
-    });
+    refreshStatus();
   }
 
   function showHookState(): void {
@@ -1224,32 +1261,66 @@
         var target = response.stdoutString ? response.stdoutString : '(none)';
         show('Boot hook: ' + target, formatExec(response));
       });
-    });
+    }, true);
   }
 
-  function registerHook(): void {
+  function toggleStartup(): void {
+    if (!lastBlock || lastBlock.hook === 'other') {
+      return;
+    }
+    var enable = lastBlock.hook === 'missing';
     runGuarded(function (): void {
-      show('Registering boot hook...', 'symlink only — the script is never copied (store rule).');
-      LgBlocklistBridge.registerHook(function (response: HbExecResponse): void {
-        showExecResult('Register boot hook', response);
-        // The nested readHookState is part of the same action: the busy flag stays
-        // held until it returns, so no second bridge command can interleave (S3
-        // review: finish() used to release it before this call).
-        LgBlocklistBridge.readHookState(function (state: HbExecResponse): void {
-          finish();
-          var target = state.stdoutString ? state.stdoutString : '(none)';
-          output.textContent = formatExec(response) + '\n\nBoot hook now: ' + target;
+      show('Updating startup…', 'Changing only this app’s startup symlink.');
+      var done = function (response: HbExecResponse): void {
+        refreshStatusInternal(function (): void {
+          var verified = lastBlock && lastBlock.hook === (enable ? 'linked' : 'missing');
+          show(response.returnValue && verified ? 'Startup saved' : 'Startup change not confirmed',
+            formatExec(response));
         });
-      });
+      };
+      if (enable) {
+        LgBlocklistBridge.registerHook(done);
+      } else {
+        LgBlocklistBridge.removeHook(done);
+      }
     });
   }
 
-  function removeHook(): void {
+  function closeCleanup(): void {
+    cleanupOpen = false;
+    el('cleanup-confirm').hidden = true;
+    rebuildNav();
+    syncControls();
+    setFocused(cleanupButton);
+  }
+
+  function disableAndRemoveStartup(): void {
+    closeCleanup();
     runGuarded(function (): void {
-      show('Removing boot hook...', 'rm -rf on the init.d symlink.');
-      LgBlocklistBridge.removeHook(function (response: HbExecResponse): void {
-        finish();
-        showExecResult('Remove boot hook', response);
+      show('Disabling protection…', 'Startup is removed only after live cleanup verification.');
+      LgBlocklistBridge.runRollback(function (response: HbExecResponse): void {
+        var result = response.returnValue ? parseResult(response.stdoutString || '') : null;
+        refreshStatusInternal(function (): void {
+          if (!result || result.result !== 'off' || !lastBlock ||
+              lastBlock.mode === 'on' || lastBlock.pointer !== 'off' ||
+              lastBlock.rule === 'on' || lastBlock.filter !== 'down') {
+            show('Cleanup not confirmed — keep the app installed',
+              'Startup was not removed. Try turning protection off again. ' + formatExec(response));
+            finish();
+            return;
+          }
+          LgBlocklistBridge.removeHook(function (removed: HbExecResponse): void {
+            refreshStatusInternal(function (): void {
+              var verified = removed.returnValue && lastBlock &&
+                lastBlock.hook !== 'linked' && lastBlock.mode !== 'on' &&
+                lastBlock.pointer === 'off' && lastBlock.filter === 'down' && lastBlock.rule !== 'on';
+              show(verified ? 'Protection OFF; app startup removed. Ready to uninstall.'
+                : 'Removal not confirmed — keep the app installed',
+                verified ? 'Domain preferences were preserved. Foreign startup files are never removed.'
+                  : formatExec(removed));
+            });
+          });
+        }, true);
       });
     });
   }
@@ -1351,11 +1422,12 @@
         after();
       }
     }
-    if (!LgBlocklistBridge.available()) {
+    if (!rootConfirmed || !LgBlocklistBridge.available()) {
       lastBlock = null;
+      ready = false;
       renderProtection('unknown');
+      renderStartup();
       renderDomains();
-      show('Bridge unavailable', LgBlocklistBridge.diagnose());
       done();
       return;
     }
@@ -1364,6 +1436,9 @@
       var raw = response.stdoutString || '';
       if (!response.returnValue) {
         lastBlock = null;
+        ready = false;
+        el('readiness').textContent = 'Status check failed. Check Homebrew Channel/root, then refresh; reinstall if package files are missing.';
+        renderStartup();
         renderProtection('unknown');
         panel.textContent = 'Status: not readable — the check command failed.';
         renderDomains();
@@ -1374,6 +1449,9 @@
       var block = LgStatus.parse(raw);
       if (!block) {
         lastBlock = null;
+        ready = false;
+        el('readiness').textContent = 'Unrecognized status. Reinstall the complete app package, then refresh.';
+        renderStartup();
         renderProtection('unknown');
         panel.textContent = 'Status: unreadable (malformed block) — reinstall the app.';
         renderDomains();
@@ -1382,6 +1460,10 @@
         return;
       }
       lastBlock = block;
+      ready = block.scripts === 'ok' && listModule() !== null;
+      el('readiness').textContent = ready ? 'Ready — Homebrew root access confirmed.'
+        : 'Required app components are missing. Keep protection OFF and reinstall the complete package.';
+      renderStartup();
       panel.textContent = statusPanel(block);
       var state = protectState(block);
       renderProtection(state);
@@ -1389,6 +1471,7 @@
       // The panel above is driven by the same block: the attention line and the
       // apply/reset copy follow the protection mode that was just probed.
       renderDomains();
+      syncControls();
       show(stateHeadline(state), 'Raw status block:\n' + rawPreview(raw));
       done();
     });
@@ -1422,8 +1505,35 @@
 
   function refreshStatus(): void {
     runGuarded(function (): void {
-      refreshAllInternal(null);
-    });
+      ready = false;
+      rootConfirmed = false;
+      lastBlock = null;
+      renderProtection('unknown');
+      renderStartup();
+      syncControls();
+      var problem = LgBlocklistBridge.diagnose();
+      if (problem) {
+        el('readiness').textContent = problem;
+        show('Package bridge unavailable', problem);
+        finish();
+        return;
+      }
+      el('readiness').textContent = 'Checking Homebrew Channel root access…';
+      LgBlocklistBridge.getConfiguration(function (config: HbConfiguration): void {
+        rootConfirmed = config.returnValue === true && config.root === true;
+        if (!rootConfirmed) {
+          var message = config.returnValue === true && config.root === false
+            ? 'Root access is unavailable. This app requires a rooted TV and Homebrew Channel root service.'
+            : 'Could not confirm Homebrew Channel access. Open Homebrew Channel, check its service/root state, then refresh.';
+          el('readiness').textContent = message;
+          panel.textContent = 'Protection and startup state unknown; no settings changed.';
+          show('Prerequisites not confirmed', message);
+          finish();
+          return;
+        }
+        refreshAllInternal(null);
+      });
+    }, true);
   }
 
   protectButton.addEventListener('click', function (): void {
@@ -1444,8 +1554,22 @@
   });
   el('btn-check').addEventListener('click', checkBridge);
   el('btn-state').addEventListener('click', showHookState);
-  el('btn-register').addEventListener('click', registerHook);
-  el('btn-remove').addEventListener('click', removeHook);
+  startupButton.addEventListener('click', toggleStartup);
+  cleanupButton.addEventListener('click', function (): void {
+    if (busy || !ready) { return; }
+    cleanupOpen = true;
+    el('cleanup-confirm').hidden = false;
+    rebuildNav();
+    setFocused(el('btn-cleanup-cancel'));
+  });
+  el('btn-cleanup-confirm').addEventListener('click', disableAndRemoveStartup);
+  el('btn-cleanup-cancel').addEventListener('click', closeCleanup);
+  el('btn-advanced').addEventListener('click', function (): void {
+    advancedOpen = !advancedOpen;
+    el('advanced').hidden = !advancedOpen;
+    el('btn-advanced').setAttribute('aria-expanded', String(advancedOpen));
+    rebuildNav();
+  });
   // S6b T7: every domain change is staged in the panel; these two write it.
   domainsApplyButton.addEventListener('click', applyDomainChanges);
   domainsResetButton.addEventListener('click', openResetConfirm);
@@ -1480,20 +1604,10 @@
   renderTier(null);
   renderDomains();
 
-  // Review fix (S1): state the concrete reason when the bridge cannot work instead
-  // of a bare "Bridge unavailable". webOS.* comes from the vendored webOSTV.js,
-  // so a missing/damaged bundle is the realistic failure mode.
-  var problem = LgBlocklistBridge.diagnose();
-  if (problem) {
-    renderProtection('unknown');
-    show('Bridge unavailable', problem);
-  } else {
-    var version = LgBlocklistBridge.libVersion();
-    var hint = 'Press "Refresh status" to probe the TV.';
-    if (version) {
-      hint = hint + ' webOSTV.js ' + version + ' loaded.';
-    }
-    show('Not checked yet', hint);
-    refreshStatus();
+  if (typeof LgBundleInfo !== 'undefined') {
+    el('bundle-info').textContent = 'App ' + LgBundleInfo.appVersion + ' · Bundled lists ' +
+      LgBundleInfo.listRevision.substring(0, 12) + ' · ' + LgBundleInfo.listDate;
   }
+  renderStartup();
+  refreshStatus();
 })();

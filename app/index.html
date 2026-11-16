@@ -7,6 +7,8 @@
 </head>
 <body>
   <h1>LG TV Blocklist</h1>
+  <p id="bundle-info"></p>
+  <p id="readiness" role="status" aria-live="polite">Checking prerequisites…</p>
   <!-- Primary control: one big action area. Its state (on/off/attention/degraded)
        is rendered ONLY from the live-probed @@STATUS block by js/main.js. -->
   <section id="protection" class="protection is-unknown">
@@ -27,7 +29,19 @@
     </div>
   </section>
   <p id="status">Starting…</p>
-  <div id="panel">Status: not checked yet.</div>
+  <p id="summary">Status: not checked yet.</p>
+  <section class="startup" aria-labelledby="startup-heading">
+    <h2 id="startup-heading">Startup and removal</h2>
+    <button id="btn-startup" aria-pressed="false" disabled>Start protection after reboot: checking…</button>
+    <p id="startup-note">Reading the saved startup setting.</p>
+    <p>Startup resumes your saved ON/OFF choice; it does not turn protection on now.</p>
+    <button id="btn-cleanup" disabled>Disable and remove startup</button>
+    <div id="cleanup-confirm" hidden>
+      <p>Turn protection OFF and remove only this app’s startup link? Domain preferences stay saved. Uninstall only after cleanup is confirmed.</p>
+      <button id="btn-cleanup-confirm">Yes, disable and remove startup</button>
+      <button id="btn-cleanup-cancel">Cancel</button>
+    </div>
+  </section>
   <!-- S6b T7: the domain list. The rows are built once from the committed
        metadata module (js/domains.gen.js) and their on/off state comes from
        `overrides.sh list` through the bridge — the panel never computes the
@@ -61,9 +75,9 @@
     <div class="help-block">
       <h3 class="help-subheading">SAFE vs STRICT</h3>
       <p class="help-text">
-        A fresh install runs SAFE: 20 high-confidence entries. STRICT adds the
-        aggressive tier on top (115 distinct domains, 123 entries once its 8 zone
-        anchors are repeated as bare whole-zone rules). STRICT may degrade the LG
+        A fresh install selects SAFE and keeps protection OFF. SAFE contains
+        high-confidence entries; STRICT adds aggressive domains and whole-zone
+        rules. STRICT may degrade the LG
         store, break LG account login, and stop ThinQ, LG Channels and firmware
         updates from working. That is what the tier is for, not a bug.
       </p>
@@ -76,7 +90,7 @@
         feature. Changes are staged until you press Apply changes. Apply rewrites
         the filter input and briefly restarts the filter, so DNS stops for a
         couple of seconds; it never happens per toggle. Reset to preset restores
-        the active tier's preset exactly as it ships. The 8 zone rows can be
+        the active tier's preset exactly as it ships. The zone rows can be
         switched in either tier: under STRICT a zone anchor blocks the whole zone,
         under SAFE it blocks only its own name. If a save would leave a preset
         with no entries, the TV refuses it and the panel names the preset that
@@ -101,12 +115,14 @@
   </section>
   <div class="buttons">
     <button id="btn-refresh">Refresh status</button>
+    <button id="btn-advanced" aria-expanded="false">Advanced</button>
+  </div>
+  <section id="advanced" hidden>
+    <div id="panel">Status: not checked yet.</div>
     <button id="btn-check">Check bridge (root)</button>
     <button id="btn-state">Show boot hook</button>
-    <button id="btn-register">Register boot hook</button>
-    <button id="btn-remove">Remove boot hook</button>
-  </div>
-  <pre id="output">Nothing done yet.</pre>
+    <pre id="output">Nothing done yet.</pre>
+  </section>
   <!-- LG webOSTV.js: the platform does not inject webOS.*; it must load first (see THIRD-PARTY-NOTICES.md) -->
   <script src="vendor/webOSTV.js" charset="utf-8"></script>
   <!-- js/overrides.js validates the domain-toggle payload before js/bridge.js can
@@ -118,6 +134,7 @@
        list-view decisions. Both are plain-script globals like the rest. -->
   <script src="js/domains.gen.js"></script>
   <script src="js/domainlist.js"></script>
+  <script src="js/bundle-info.gen.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>

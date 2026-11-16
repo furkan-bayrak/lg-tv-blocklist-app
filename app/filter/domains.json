@@ -49,6 +49,13 @@
     "note": "ad zone | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH. No cluster successor found. Kept for the audit record; harmless to block."
   },
   {
+    "name": "ae.info.lgsmartad.com",
+    "tier": "safe",
+    "category": "ads",
+    "zone": "",
+    "note": "regional ad info endpoint in the dedicated lgsmartad.com ad zone — repo issue #24 (@kdeldycke), LG B4 UAE, webOS 25 10.3.2-33; UniFi gateway log observation, reporter runs STRICT with this ad zone blocked"
+  },
+  {
     "name": "aic.ads.lgtvcommon.com",
     "tier": "strict",
     "category": "ads",
@@ -217,6 +224,13 @@
     "note": "file transfer service — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
   },
   {
+    "name": "aic-gfts.tv.wiselg.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "wiselg.com",
+    "note": "weak — file-transfer sibling, aic cluster; DNS existence only (Google + Cloudflare DoH 2026-11-10), no TV traffic observation"
+  },
+  {
     "name": "aic-ngfts.lge.com",
     "tier": "strict",
     "category": "ota",
@@ -238,11 +252,60 @@
     "note": "update transfer (wiselg family) — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
   },
   {
+    "name": "au.ad.lgsmartad.com",
+    "tier": "safe",
+    "category": "ota",
+    "zone": "",
+    "note": "regional ad endpoint in the dedicated lgsmartad.com ad zone — repo issue #22 (@Merloko), LG C2 Australia, firmware 33.31.68; DNS + TLS SNI capture 2026-10-28; live-block test not performed"
+  },
+  {
+    "name": "au.app.lgwebostv.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "",
+    "note": "weak — webOS regional app endpoint, app/store risk unverified; repo issue #23 (@Merloko), LG C2 AU firmware 33.31.68; DNS + TLS SNI capture 2026-10-28; encrypted payload, no live-block test"
+  },
+  {
+    "name": "au.elastic.lgwebostv.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "",
+    "note": "weak — webOS regional endpoint, function unverified; repo issue #23 (@Merloko), LG C2 AU firmware 33.31.68; DNS + TLS SNI capture 2026-10-28; encrypted payload, no live-block test"
+  },
+  {
+    "name": "au.info.lgsmartad.com",
+    "tier": "safe",
+    "category": "ota",
+    "zone": "",
+    "note": "regional ad info endpoint in the dedicated lgsmartad.com ad zone — repo issue #22 (@Merloko), LG C2 Australia, firmware 33.31.68; DNS + TLS SNI capture 2026-10-28; live-block test not performed"
+  },
+  {
+    "name": "au.nextlgsdp.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "nextlgsdp.com",
+    "note": "weak — SDP region endpoint, possible clock/store dependency (issue #6); repo issue #23 (@Merloko), LG C2 AU firmware 33.31.68; DNS + TLS SNI capture 2026-10-28; no live-block test, allowlist if time sync fails"
+  },
+  {
+    "name": "au.rdx2.nextlgsdp.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "nextlgsdp.com",
+    "note": "weak — SDP endpoint, function unverified; repo issue #23 (@Merloko), LG C2 AU firmware 33.31.68; TLS SNI capture 2026-10-28, 10-minute cadence; no live-block test"
+  },
+  {
     "name": "eic-gfts.lge.com",
     "tier": "strict",
     "category": "ota",
     "zone": "lge.com",
     "note": "file-transfer telemetry"
+  },
+  {
+    "name": "eic-gfts.tv.wiselg.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "wiselg.com",
+    "note": "weak — file-transfer sibling, payload purpose unverified; repo issue #24 (@kdeldycke), LG B4 UAE webOS 25 10.3.2-33; gateway blocked-query observation at power-on; no isolated block test"
   },
   {
     "name": "eic-ngfts.lge.com",
@@ -280,6 +343,13 @@
     "note": "file transfer service — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
   },
   {
+    "name": "kic-gfts.tv.wiselg.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "wiselg.com",
+    "note": "weak — file-transfer sibling, kic cluster; DNS existence only (Google + Cloudflare DoH 2026-11-10), no TV traffic observation"
+  },
+  {
     "name": "kic-ngfts.lge.com",
     "tier": "strict",
     "category": "ota",
@@ -315,6 +385,13 @@
     "note": "update transfer on SDP family"
   },
   {
+    "name": "ngfts.tv.wiselg.com",
+    "tier": "strict",
+    "category": "ota",
+    "zone": "wiselg.com",
+    "note": "weak — file-transfer sibling, payload purpose unverified; repo issues #23 (@Merloko, LG C2 AU firmware 33.31.68, DNS + TLS SNI capture 2026-10-28) and #24 (@kdeldycke, LG B4 UAE webOS 25 10.3.2-33, gateway blocked-query observation); no isolated block test"
+  },
+  {
     "name": "snu.lge.com",
     "tier": "strict",
     "category": "ota",
@@ -343,6 +420,20 @@
     "note": "OTA update server"
   },
   {
+    "name": "ae.nextlgsdp.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "nextlgsdp.com",
+    "note": "SDP region endpoint, CLOCK DEPENDENCY — repo issue #24 (@kdeldycke), LG B4 UAE webOS 25 10.3.2-33; gateway logs (~3-minute cadence); reporter must allowlist this host for clock sync, not SAFE"
+  },
+  {
+    "name": "ae.rdx2.nextlgsdp.com",
+    "tier": "strict",
+    "category": "other",
+    "zone": "nextlgsdp.com",
+    "note": "weak — SDP endpoint, function unverified; repo issue #24 (@kdeldycke), LG B4 UAE webOS 25 10.3.2-33; gateway log observation; no isolated block test"
+  },
+  {
     "name": "aic-ocp.lgtviot.com",
     "tier": "strict",
     "category": "other",
@@ -362,6 +453,13 @@
     "category": "other",
     "zone": "lgtvcommon.com",
     "note": "weak — home-app service — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "alphonso.tv",
+    "tier": "safe",
+    "category": "other",
+    "zone": "",
+    "note": "owner-directed exception; LG TV Alphonso subdomains reported in https://www.reddit.com/r/pihole/comments/scsg2w/lg_tv_has_changed_ad_providers_january_2022/ and OLED65BX blocking reported functional in https://gist.github.com/mcrumm/972070dfe67d44ed61c4247563cbf07c; included in https://github.com/hagezi/dns-blocklists/blob/main/wildcard/native.lgwebos-onlydomains.txt; not independently smoke-tested by this project; compatibility unverified, may move to STRICT if breakage is reported"
   },
   {
     "name": "am.lge.com",
@@ -455,6 +553,13 @@
     "note": "weak — store-CDN-adjacent, app-update function unproven | DECOMMISSIONED 2026-09-12: NXDOMAIN on Google+Cloudflare DoH. No cluster successor found. Kept for the audit record; harmless to block."
   },
   {
+    "name": "ae.lgeapi.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "lgeapi.com",
+    "note": "weak — region API, store/billing interplay unproven; repo issue #24 (@kdeldycke), LG B4 UAE webOS 25 10.3.2-33; gateway log observation, reporter runs STRICT; inherits de.lgeapi.com tier"
+  },
+  {
     "name": "aic.lgeapi.com",
     "tier": "strict",
     "category": "store",
@@ -523,6 +628,13 @@
     "category": "store",
     "zone": "lgtvcommon.com",
     "note": "weak — common-services endpoint, store interplay unproven — eic (Europe) datacentre cluster; DNS-verified 2026-09-12; bare service.lgtvcommon.com is now NXDOMAIN, so this is where the service lives"
+  },
+  {
+    "name": "eic.tv.wiselg.com",
+    "tier": "strict",
+    "category": "store",
+    "zone": "wiselg.com",
+    "note": "Content Store/app-update dependency reported on OLED65C34LA, webOS 26/11.2.0-3711; allowing this host reportedly restores both (issue #25, https://github.com/furkan-bayrak/lg-tv-blocklist/issues/25). Previously blocked on G1 with apps working; not independently reproduced on C3."
   },
   {
     "name": "kic.lgeapi.com",
@@ -620,7 +732,7 @@
     "tier": "safe",
     "category": "telemetry",
     "zone": "nextlgsdp.com",
-    "note": "SDP region endpoint, telemetry [REGION-SCOPED]"
+    "note": "SDP region endpoint, telemetry — never generalised to a region regex: the two-letter region hosts carry TV time/apps traffic on some models (hagezi/dns-blocklists#11438)"
   },
   {
     "name": "eic.api.lgtviot.com",
@@ -635,13 +747,6 @@
     "category": "telemetry",
     "zone": "lgtviot.com",
     "note": "IoT telemetry (largest observed family, ~5.1k queries)"
-  },
-  {
-    "name": "eic.tv.wiselg.com",
-    "tier": "safe",
-    "category": "telemetry",
-    "zone": "wiselg.com",
-    "note": "TV telemetry (blocked live, apps fine)"
   },
   {
     "name": "eic.wiseconfig.lgtvcommon.com",
@@ -686,13 +791,6 @@
     "note": "weak — cloud-config telemetry — kic (Korea) datacentre cluster; DNS-verified 2026-09-12"
   },
   {
-    "name": "lgtvsdp.com",
-    "tier": "safe",
-    "category": "telemetry",
-    "zone": "",
-    "note": "SDP telemetry apex (service delivery platform beacons)"
-  },
-  {
     "name": "aic-op-lss.lgthinq.com",
     "tier": "strict",
     "category": "thinq",
@@ -705,6 +803,13 @@
     "category": "thinq",
     "zone": "lgthinq.com",
     "note": "weak — ThinQ cloud entry point — aic (Americas) datacentre cluster; DNS-verified 2026-09-12"
+  },
+  {
+    "name": "connect-client.lgthinq.com",
+    "tier": "strict",
+    "category": "thinq",
+    "zone": "lgthinq.com",
+    "note": "ThinQ cloud connection endpoint — repo issue #24 (@kdeldycke), LG B4 UAE webOS 25 10.3.2-33; gateway blocked-query observation at power-on; ThinQ impact untested"
   },
   {
     "name": "eic-op-lss.lgthinq.com",

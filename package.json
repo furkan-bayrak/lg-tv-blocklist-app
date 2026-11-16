@@ -1,6 +1,6 @@
 {
   "name": "lg-tv-blocklist-app",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "description": "Experimental DNS blocking with SAFE/STRICT profiles for rooted LG webOS TVs via the Homebrew Channel.",
   "license": "MIT",
@@ -9,21 +9,21 @@
     "url": "https://github.com/furkan-bayrak/lg-tv-blocklist-app.git"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || ^22.13.0 || >=24"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "check:es5": "node tools/check-es5.mjs",
-    "check:node8": "node tools/check-node8.mjs",
+    "build": "node tools/gen-bundle-info.mjs && tsc -p tsconfig.json",
+    "lint": "eslint --max-warnings 0 \"app/**/*.js\" \"app/js/**/*.js\" \"app/scripts/**/*.js\"",
     "test:ts": "node --test \"tests/ts/*.test.mjs\"",
     "test:shell": "sh tests/shell/run-tests.sh",
     "test:packaging": "python3 -B -m unittest discover -s tests/packaging -p 'test_*.py'",
-    "test": "npm run build && npm run check:es5 && npm run test:ts && npm run test:shell && npm run test:packaging",
+    "test": "npm run build && npm run lint && npm run test:ts && npm run test:shell && npm run test:packaging",
     "package": "ares-package --outdir dist --no-minify app && python3 -B tools/normalize-ipk.py dist/*.ipk",
     "dist": "npm test && npm run package"
   },
   "devDependencies": {
     "@webos-tools/cli": "3.2.6",
+    "eslint": "10.14.0",
     "typescript": "5.9.3"
   }
 }

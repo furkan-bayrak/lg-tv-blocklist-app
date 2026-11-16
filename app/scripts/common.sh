@@ -516,6 +516,9 @@ rules_on_verified() {
   rr_r=0
   while [ "$rr_r" -lt "$RULES_RETRY" ]; do
     rr_r=$((rr_r+1))
+    # Removal can happen during a recovery wait/probe. Never re-arm from a
+    # still-loaded keeper after the package has gone; callers clean up first.
+    if [ ! -d "$APP_DIR" ]; then RULES_FAIL=rules; return 1; fi
     rules_on "$rr_up"
     if ! rules_present "$rr_up"; then
       RULES_FAIL=rules

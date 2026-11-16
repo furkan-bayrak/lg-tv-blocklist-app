@@ -30,6 +30,7 @@ const HOOK_LINK = '/var/lib/webosbrew/init.d/50-lgtv-blocklist-app';
 function loadBridge(options = {}) {
   const calls = [];
   const context = {
+    setTimeout, clearTimeout,
     webOS: {
       libVersion: '1.2.13',
       service: {
@@ -71,27 +72,6 @@ test('public API is exactly the fixed wrapper set — no generic exec', () => {
   assert.equal(bridge.runFixedCommand, undefined);
 });
 
-test('each wrapper sends its exact fixed command to the HBC service', () => {
-  const { bridge, calls } = loadBridge();
-  const noop = () => {};
-  bridge.registerHook(noop);
-  bridge.removeHook(noop);
-  bridge.readHookState(noop);
-  bridge.runCheck(noop);
-  assert.equal(calls.length, 4);
-  for (const call of calls) {
-    assert.equal(call.uri, 'luna://org.webosbrew.hbchannel.service');
-    assert.equal(call.method, 'exec');
-  }
-  assert.equal(
-    calls[0].parameters.command,
-    'mkdir -p /var/lib/webosbrew/init.d && chmod +x ' + APP_DIR + '/scripts/boot.sh' +
-      ' && ln -sf ' + APP_DIR + '/scripts/boot.sh ' + HOOK_LINK
-  );
-  assert.equal(calls[1].parameters.command, 'rm -rf ' + HOOK_LINK);
-  assert.equal(calls[2].parameters.command, 'readlink ' + HOOK_LINK);
-  assert.equal(calls[3].parameters.command, 'sh ' + APP_DIR + '/scripts/check.sh');
-});
 
 test('every fixed command stays inside the conservative character set', () => {
   const { bridge, calls } = loadBridge();

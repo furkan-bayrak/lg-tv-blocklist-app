@@ -363,14 +363,30 @@ test('committed domains.json: one row per domain in the shipped tier lists', () 
     assert.ok(names.includes(name), name + ' is blocked by a tier list but has no row');
   }
   assert.equal(names.length, new Set(safeNames.concat(strictNames)).size, 'no rows for unlisted domains');
-  // Counts per tier, pinned: 20 SAFE (all of them in the strict list as well,
-  // since strict = safe + delta), 87 strict-only, 8 live zone anchors.
+  // SAFE has exact entries only, while STRICT includes every row's exact
+  // entry and one bare entry per zone anchor.
   const tiers = { safe: 0, strict: 0, zone: 0 };
   for (const row of rows) {
     tiers[row.tier] += 1;
   }
-  assert.deepEqual(tiers, { safe: 20, strict: 87, zone: 8 });
-  assert.equal(rows.length, 115);
+  assert.equal(tiers.safe, new Set(safeNames).size);
+  const strictText = readFileSync(join(FILTER_DIR, 'filter-input-strict.txt'), 'utf8');
+  const anchors = strictText.split('\n').filter((line) => line && !/^[#=]/.test(line));
+  assert.equal(tiers.zone, anchors.length);
+  assert.equal(tiers.strict, rows.length - tiers.safe - tiers.zone);
+});
+
+test('Content Store dependency remains STRICT-only after issue #25 correction', () => {
+  const name = 'eic.tv.wiselg.com';
+  const row = committed().find((entry) => entry.name === name);
+  assert.ok(row, 'reported dependency has a metadata row');
+  assert.equal(row.tier, 'strict');
+  const safeRules = readFileSync(join(FILTER_DIR, 'filter-input-safe.txt'), 'utf8')
+    .split('\n').filter((line) => line && line[0] !== '#');
+  assert.equal(safeRules.some((rule) => rule === '=' + name ||
+    (rule[0] !== '=' && (name === rule || name.endsWith('.' + rule)))), false);
+  assert.ok(!listNames(join(FILTER_DIR, 'filter-input-safe.txt')).includes(name));
+  assert.ok(listNames(join(FILTER_DIR, 'filter-input-strict.txt')).includes(name));
 });
 
 test('committed domains.json: shape, order, category table and the zone invariants', () => {
@@ -499,13 +515,20 @@ test('committed domains.json is regenerable from the pinned checkout', (t) => {
   }
   const outDir = mkdtempSync(join(tmpdir(), 'lgtvb-dom-live-'));
   try {
-    // The tier lists must sit next to the output (that is the pin's source), so
-    // copy the committed ones in unchanged.
-    for (const file of ['filter-input-safe.txt', 'filter-input-strict.txt']) {
-      writeFileSync(join(outDir, file), readFileSync(join(FILTER_DIR, file)));
+    // Upstream may commit annotated sources before its generated lists. Build
+    // that exact committed source in a disposable clone, never the sibling.
+    const source = join(outDir, 'source');
+    git(outDir, 'clone', '--quiet', '--no-hardlinks', '--no-checkout', repo, source);
+    git(source, 'checkout', '--quiet', '--detach', pin);
+    execFileSync('python3', ['-B', join(source, 'scripts', 'build.py'), 'build']);
+    execFileSync(process.execPath, [LIST_GENERATOR, source], {
+      env: { ...process.env, LGTVB_FILTER_OUT_DIR: outDir }
+    });
+    for (const file of ['filter-input-safe.txt', 'filter-input-strict.txt', 'filter-input.txt']) {
+      assert.equal(readFileSync(join(outDir, file), 'utf8'), readFileSync(join(FILTER_DIR, file), 'utf8'));
     }
     const outPath = join(outDir, 'domains.json');
-    const result = runGenerator(repo, outPath);
+    const result = runGenerator(source, outPath);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(outPath, 'utf8'), readFileSync(DOMAINS, 'utf8'));
   } finally {

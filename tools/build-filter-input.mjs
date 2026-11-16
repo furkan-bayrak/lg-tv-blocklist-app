@@ -33,9 +33,9 @@
  *   into <dir> instead of app/filter; an explicit outPath still wins.
  *
  * Deterministic output: deduplicated, sorted, LF only. Node built-ins only.
- * The pinned ref is the source checkout's HEAD, recorded in the header; there
- * is no wall-clock timestamp, so the same source commit regenerates byte-identical
- * files (the commit date of the generated file is the provenance).
+ * The pinned ref and source date come from the source checkout's HEAD. The date
+ * is the commit's recorded date, never the generation clock, so the same source
+ * commit regenerates byte-identical files.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -121,11 +121,15 @@ const zones = zoneAnchors(join(blocklistRepo, 'src', 'zones.txt'));
 const headSha = execFileSync('git', ['-C', blocklistRepo, 'rev-parse', 'HEAD'], {
   encoding: 'utf8'
 }).trim();
+const sourceDate = execFileSync('git', ['-C', blocklistRepo, 'show', '-s', '--format=%cs', headSha], {
+  encoding: 'utf8'
+}).trim();
 
 const header = [
   '# lg-tv-blocklist-app filter input — GENERATED, DO NOT EDIT',
   '# generator: tools/build-filter-input.mjs',
-  '# source: lg-tv-blocklist @ ' + headSha
+  '# source: lg-tv-blocklist @ ' + headSha,
+  '# source-date: ' + sourceDate
 ];
 
 if (outPath) {
