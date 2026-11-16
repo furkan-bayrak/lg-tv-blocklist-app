@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES5",
+    "module": "none",
     "lib": ["ES5", "DOM"],
     "rootDir": "src",
     "outDir": "app/js",

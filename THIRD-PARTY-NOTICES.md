@@ -38,10 +38,24 @@ first-party (MIT - see `LICENSE`).
   than being fetched at runtime.
 - **Provenance:** the domain metadata comes from the upstream project
   <https://github.com/furkan-bayrak/lg-tv-blocklist>.
-- **Derivation:** the Safe and Strict presets are derived from the committed metadata in
-  `app/filter/domains.json`; the generator `tools/build-filter-input.mjs` reads that
-  file and records the upstream revision it was built from in each preset's header.
+- **Derivation:** `tools/build-filter-input.mjs` transforms the upstream generated
+  presets, keeping the app's region policy; `tools/gen-domains.mjs` joins the source
+  annotations. Headers record the source commit and date; local overrides are
+  applied separately at runtime.
 - **License:** Creative Commons Attribution 4.0 International (CC BY 4.0). The license
   text is not bundled; the canonical copy is at
   <https://creativecommons.org/licenses/by/4.0/legalcode>.
 - **Attribution:** furkan-bayrak/lg-tv-blocklist, licensed CC BY 4.0.
+
+## dnscrypt-proxy 2.1.18 — Frank Denis and contributors
+
+- **Bundled at:** `app/filter/dnscrypt-proxy`, pinned Linux ARM executable.
+- **Source:** <https://github.com/DNSCrypt/dnscrypt-proxy/tree/2.1.18>.
+- **License:** ISC; the copyright and permission text ship at
+  `app/filter/LICENSE.dnscrypt-proxy.txt`.
+- **Archive SHA256:** `f5bb0ce9c168b4afc6d7babe71462599d5bd15903931a67a44fb86e1f90a44e6`.
+- **Executable SHA256:** `c5af4b287084d82fbf7cefa6833cdf865efe12e4286b56b9ceaf46de310007f7`.
+- Go runtime and vendored dependency copyright/license notices are bundled in
+  `app/filter/THIRD-PARTY-dnscrypt.txt`. All 29 linked dependency versions match
+  the pinned release source vendor manifest; the executable reports Go 1.26.5.
+  Source-archive SHA256 and individual notice paths are recorded in that file.

@@ -17,6 +17,8 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import dgram from 'node:dgram';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 
 const DNSQ = fileURLToPath(new URL('../../app/scripts/dnsq.js', import.meta.url));
 
@@ -63,14 +65,15 @@ const PKT_LABEL_0X40 = '123481800001000100000000' + QUESTION_EXAMPLE_COM + '4001
 // Runs `node dnsq.js <name> 127.0.0.1 <port>` against a stub server that replies
 // with packetHex. Resolves once the child exits, or after killMs with
 // timedOut=true (the child is the thing under test; it must not be waited on).
-function runDnsq(packetHex, name = 'a.test', killMs = TIMEOUT_MS) {
+function runDnsq(packetHex, name = 'a.test', killMs = TIMEOUT_MS, address = '127.0.0.1') {
   return new Promise((resolve, reject) => {
-    const server = dgram.createSocket('udp4');
+    const server = dgram.createSocket(address.includes(':') ? 'udp6' : 'udp4');
     const startedAt = Date.now();
     let child = null;
     let timedOut = false;
     let killTimer = null;
     let settled = false;
+    let query = null;
 
     const done = (result) => {
       if (settled) return;
@@ -81,16 +84,17 @@ function runDnsq(packetHex, name = 'a.test', killMs = TIMEOUT_MS) {
       } catch {
         /* already closed */
       }
-      resolve({ ...result, ms: Date.now() - startedAt });
+      resolve({ ...result, query, ms: Date.now() - startedAt });
     };
 
     server.on('message', (msg, rinfo) => {
+      query = msg;
       server.send(Buffer.from(packetHex, 'hex'), rinfo.port, rinfo.address);
     });
     server.on('error', reject);
-    server.bind(0, '127.0.0.1', () => {
+    server.bind(0, address, () => {
       const port = server.address().port;
-      child = spawn(process.execPath, [DNSQ, name, '127.0.0.1', String(port)]);
+      child = spawn(process.execPath, [DNSQ, name, address, String(port)]);
       let stdout = '';
       let stderr = '';
       child.stdout.on('data', (d) => {
@@ -140,6 +144,48 @@ test('REFUSED answer (mode A default: ancount=0, rcode!=0) still exits 2', async
   const r = await runDnsq(PKT_REFUSED, 'blocked.test');
   assertTerminated(r, 'rcode=5 ancount=0 none');
   assert.equal(r.code, 2, 'rcode!=0 must exit 2 so canary_blocked passes');
+});
+
+test('IPv6 loopback resolver receives the same A query and reports a bypass answer', async () => {
+  const r = await runDnsq(PKT_NORMAL_A, 'example.com', TIMEOUT_MS, '::1');
+  assertTerminated(r, 'rcode=0 ancount=1 A=93.184.216.34');
+  assert.equal(r.code, 0);
+  assert.equal(r.query.subarray(12).toString('hex'), QUESTION_EXAMPLE_COM);
+});
+
+test('IPv6 loopback resolver REFUSED answer exits 2', async () => {
+  const r = await runDnsq(PKT_REFUSED, 'example.com', TIMEOUT_MS, '::1');
+  assertTerminated(r, 'rcode=5 ancount=0 none');
+  assert.equal(r.code, 2);
+  assert.equal(r.query.subarray(12).toString('hex'), QUESTION_EXAMPLE_COM);
+});
+
+test('socket errors fail explicitly instead of becoming a successful DNS response', () => {
+  const handlers = {};
+  const output = [];
+  let exitCode;
+  let closed = false;
+  let cleared = false;
+  const socket = {
+    on(event, callback) { handlers[event] = callback; },
+    send() { handlers.error(new Error('socket unavailable')); },
+    close() { closed = true; },
+  };
+  vm.runInNewContext(readFileSync(DNSQ, 'utf8'), {
+    require(module) {
+      assert.equal(module, 'dgram');
+      return { createSocket(type) { assert.equal(type, 'udp6'); return socket; } };
+    },
+    process: { argv: ['node', DNSQ, 'example.com', '::1', '53'], exit(code) { exitCode = code; } },
+    Buffer,
+    console: { log(line) { output.push(line); } },
+    setTimeout() { return 1; },
+    clearTimeout(timer) { assert.equal(timer, 1); cleared = true; },
+  });
+  assert.equal(exitCode, 1);
+  assert.deepEqual(output, ['ERROR']);
+  assert.equal(closed, true);
+  assert.equal(cleared, true);
 });
 
 test('truncated message (ANCOUNT=1, no answer bytes) terminates with no A= value', async () => {

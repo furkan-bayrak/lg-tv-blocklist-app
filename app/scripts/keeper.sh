@@ -22,6 +22,11 @@ log "keeper-start pid=$$"
 keeper_unlock() { lock_release; }
 keeper_lock_on() {
   lock_try_acquire || return 1
+  if [ ! -d "$APP_DIR" ]; then
+    fail_open_terminal "app-removed"
+    keeper_unlock
+    return 1
+  fi
   # Failed Disable retains pointer=on to describe the still-serving filter.
   # Its pending OFF request remains authoritative even after unlocked probes.
   [ "$(state_get pointer)" = on ] && [ ! -e "$STATE/cleanup-pending" ] && return 0
@@ -39,6 +44,16 @@ while :; do
   keeper_unlock
   sleep "$TICK"
   tseq=$((tseq+1))
+
+  # Loaded shell functions survive package deletion; do not depend on a DNS
+  # canary failing (or a still-running resolver dying) to notice uninstall.
+  # Keep retrying with the serving filter intact if cleanup cannot be proved.
+  if [ ! -d "$APP_DIR" ]; then
+    if lock_try_acquire; then
+      if fail_open_terminal "app-removed"; then exit 0; fi
+    fi
+    continue
+  fi
 
   # guard supervision (cheap, always)
   if ! guard_running; then
@@ -102,6 +117,11 @@ while :; do
         else
           fail_open_terminal "rules-readd-verify"
         fi
+      elif ! canary_resolvers; then
+        keeper_lock_on || continue
+        # Apply or a network change may have repaired the path while waiting
+        # for the lock. Only fail open on a fresh configured-resolver failure.
+        canary_resolvers || fail_open_terminal "verify-resolver"
       fi
       continue
     fi

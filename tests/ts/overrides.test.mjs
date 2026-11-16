@@ -92,7 +92,7 @@ test('every shipped domain row serializes: the UI can send any row it renders', 
   const result = LgOverrides.serialize(entries, DOMAIN_NAMES);
   assert.equal(result.ok, true);
   assert.deepEqual(result.payload.split('\n').slice(0, -1), DOMAIN_NAMES.map((name) => name + '=on'));
-  // 115 rows is well inside both caps, so nothing here is a cap accident.
+  // The bundled rows fit inside the override limit without truncation.
   assert.equal(DOMAIN_NAMES.length < LgOverrides.MAX_LINES, true);
 });
 

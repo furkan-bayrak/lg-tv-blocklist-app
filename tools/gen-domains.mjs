@@ -406,7 +406,7 @@ function tsModuleText(rows, entries) {
   lines.push(' * what check.sh reports as entries=<N> for that tier with no overrides.');
   lines.push(' *');
   lines.push(' * ES5: plain object literal, no Map/Set, no getters, no template literals, so');
-  lines.push(' * tools/check-es5.mjs and tools/check-node8.mjs stay green on the compiled file.');
+  lines.push(' * npm run lint validates the compiled file with the ESLint ES5 parser.');
   lines.push(' */');
   lines.push('');
   lines.push('interface LgDomainRow {');

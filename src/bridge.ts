@@ -48,8 +48,8 @@
  *  - The bridge has no concurrency lock: callers must serialize calls
  *    (the UI keeps a single in-flight command).
  *
- * ES5 discipline: compiled with target ES5; async/await and generators are
- * banned project-wide (guarded by tools/check-es5.mjs).
+ * ES5 discipline: TypeScript targets ES5; npm run lint parses the shipped
+ * JavaScript as ES5 scripts without assuming newer runtime APIs.
  */
 
 interface HbExecResponse {
@@ -130,14 +130,10 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
   // App install path on a rooted TV (verified on the G1 in S1, Task 5).
   var APP_DIR = '/media/developer/apps/usr/palm/applications/io.github.furkanbayrak.lgtvblocklist';
   var HOOK_LINK = '/var/lib/webosbrew/init.d/50-lgtv-blocklist-app';
-  var HOOK_TARGET = APP_DIR + '/scripts/boot.sh';
 
-  // Fixed commands only (design spec D13a). All are idempotent. The app-side
-  // contract test (tests/ts/bridge.test.mjs) pins the exact strings below.
-  var CMD_REGISTER_HOOK =
-    'mkdir -p /var/lib/webosbrew/init.d && chmod +x ' + HOOK_TARGET +
-    ' && ln -sf ' + HOOK_TARGET + ' ' + HOOK_LINK;
-  var CMD_REMOVE_HOOK = 'rm -rf ' + HOOK_LINK;
+  // Fixed helper owns conflict checks; never overwrite or recursively remove a hook.
+  var CMD_REGISTER_HOOK = 'sh ' + APP_DIR + '/scripts/startup.sh register';
+  var CMD_REMOVE_HOOK = 'sh ' + APP_DIR + '/scripts/startup.sh remove';
   var CMD_HOOK_STATE = 'readlink ' + HOOK_LINK;
   // Runs the live status probe (app/scripts/check.sh); block parsing happens in
   // src/status.ts, never here.
@@ -242,11 +238,25 @@ var LgBlocklistBridge: LgBlocklistBridgeApi = (function (): LgBlocklistBridgeApi
   }
 
   function getConfiguration(onDone: (response: HbConfiguration) => void): void {
-    request('getConfiguration', {}, function (response: unknown): void {
-      onDone(response as HbConfiguration);
-    }, function (error: unknown): void {
-      onDone({ returnValue: false, errorText: describeError(error) });
-    });
+    var completed = false;
+    var timer = setTimeout(function (): void {
+      complete({ returnValue: false, errorText: 'Homebrew configuration request timed out. Open Homebrew Channel and refresh.' });
+    }, 15000);
+    function complete(response: HbConfiguration): void {
+      if (completed) { return; }
+      completed = true;
+      clearTimeout(timer);
+      onDone(response);
+    }
+    try {
+      request('getConfiguration', {}, function (response: unknown): void {
+        complete(response as HbConfiguration);
+      }, function (error: unknown): void {
+        complete({ returnValue: false, errorText: describeError(error) });
+      });
+    } catch (error) {
+      complete({ returnValue: false, errorText: describeError(error) });
+    }
   }
 
   function registerHook(onDone: (response: HbExecResponse) => void): void {

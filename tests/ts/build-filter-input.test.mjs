@@ -53,7 +53,9 @@ function makeSourceRepo() {
   git(dir, 'config', 'user.email', 'test@example.invalid');
   git(dir, 'config', 'user.name', 'Test');
   git(dir, 'add', '-A');
-  git(dir, 'commit', '-qm', 'fixture');
+  execFileSync('git', ['-C', dir, 'commit', '-qm', 'fixture'], {
+    env: { ...process.env, GIT_AUTHOR_DATE: '2001-02-03T04:05:06+00:00', GIT_COMMITTER_DATE: '2001-02-03T04:05:06+00:00' }
+  });
   return { dir: dir, sha: git(dir, 'rev-parse', 'HEAD').trim() };
 }
 
@@ -61,7 +63,7 @@ const HEADER_1 = '# lg-tv-blocklist-app filter input — GENERATED, DO NOT EDIT'
 const HEADER_2 = '# generator: tools/build-filter-input.mjs';
 
 function headerFor(sha) {
-  return [HEADER_1, HEADER_2, '# source: lg-tv-blocklist @ ' + sha];
+  return [HEADER_1, HEADER_2, '# source: lg-tv-blocklist @ ' + sha, '# source-date: 2001-02-03'];
 }
 
 function cleanup(dir) {
@@ -163,10 +165,15 @@ test('committed tier lists: same header and pin as the legacy file', () => {
 
   for (const text of [safe, strict]) {
     assert.match(text, /^# source: lg-tv-blocklist @ [0-9a-f]{40}$/m);
+    assert.match(text, /^# source-date: \d{4}-\d{2}-\d{2}$/m);
     assert.doesNotMatch(text, /^# generated:/m);
     assert.equal(text.split('\n')[0], HEADER_1);
     assert.equal(text.split('\n')[1], HEADER_2);
   }
+  assert.equal(
+    /^# source-date: (.+)$/m.exec(safe)[1],
+    /^# source-date: (.+)$/m.exec(strict)[1]
+  );
   // Only the tier source and the zone anchors differ between the two lists:
   // STRICT is the pre-S6a snapshot unchanged, and the legacy file is that list.
   assert.equal(strict, legacy);

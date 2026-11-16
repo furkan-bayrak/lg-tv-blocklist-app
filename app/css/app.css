@@ -406,3 +406,23 @@ button:focus {
 [hidden] {
   display: none !important;
 }
+
+.startup {
+  margin: 24px 0;
+  padding: 20px;
+  border: 1px solid #4a4a58;
+}
+
+#readiness, #startup-note, #bundle-info, #summary {
+  line-height: 1.4;
+}
+
+button:disabled {
+  opacity: 0.5;
+}
+
+#cleanup-confirm {
+  border: 2px solid #d99a2b;
+  padding: 16px;
+  margin-top: 16px;
+}

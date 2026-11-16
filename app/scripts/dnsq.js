@@ -2,7 +2,7 @@
 // Usage: node dnsq.js <name> [server] [port]
 // Prints: 'rcode=<n> ancount=<n> A=<ip>|CNAME|type=<n>|none' — 'none' = no answer, or an
 // answer too short/garbled to parse (every walk is bounded by msg.length).
-// Exit: 0 NOERROR, 2 rcode!=0, 1 timeout.
+// Exit: 0 NOERROR, 2 rcode!=0, 1 timeout/socket failure.
 var dgram = require('dgram');
 var name = process.argv[2] || '';
 var srv = process.argv[3] || '127.0.0.1';
@@ -14,9 +14,15 @@ for (var i = 0; i < parts.length; i++) {
   for (var j = 0; j < parts[i].length; j++) q.push(parts[i].charCodeAt(j));
 }
 q.push(0, 0, 1, 0, 1);
-var sock = dgram.createSocket('udp4');
+var sock = dgram.createSocket(srv.indexOf(':') !== -1 ? 'udp6' : 'udp4');
 var buf = Buffer.from(q);
 var timer = setTimeout(function () { console.log('TIMEOUT'); process.exit(1); }, 4000);
+sock.on('error', function () {
+  clearTimeout(timer);
+  console.log('ERROR');
+  sock.close();
+  process.exit(1);
+});
 sock.on('message', function (msg) {
   var rcode = msg[3] & 0x0f, an = msg.length >= 12 ? msg[6] * 256 + msg[7] : 0;
   var line = 'rcode=' + rcode + ' ancount=' + an;

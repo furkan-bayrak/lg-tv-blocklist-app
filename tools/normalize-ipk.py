@@ -26,15 +26,15 @@ AR_NAMES = ("debian-binary", "control.tar.gz", "data.tar.gz")
 APP = "usr/palm/applications/io.github.furkanbayrak.lgtvblocklist"
 PACKAGEINFO = "usr/palm/packages/io.github.furkanbayrak.lgtvblocklist/packageinfo.json"
 ASSETS = """
-appinfo.json index.html icon.png largeIcon.png css/app.css
-js/bridge.js js/domainlist.js js/domains.gen.js js/main.js js/overrides.js js/status.js
+appinfo.json index.html icon.png largeIcon.png css/app.css LICENSE THIRD-PARTY-NOTICES.md
+js/bridge.js js/domainlist.js js/domains.gen.js js/bundle-info.gen.js js/main.js js/overrides.js js/status.js
 vendor/webOSTV.js vendor/LICENSE-webOSTVjs.txt
-filter/dnscrypt-proxy filter/LICENSE.dnscrypt-proxy.txt filter/domains.json
+filter/dnscrypt-proxy filter/LICENSE.dnscrypt-proxy.txt filter/THIRD-PARTY-dnscrypt.txt filter/domains.json
 filter/filter-input.txt filter/filter-input-safe.txt filter/filter-input-strict.txt
 filter/dnscrypt-proxy.toml.template filter/forward-rules.txt.template
 scripts/apply.sh scripts/boot.sh scripts/check.sh scripts/common.sh scripts/dnsq.js
 scripts/dnsq.sh scripts/guard.sh scripts/keeper.sh scripts/overrides.sh
-scripts/rollback.sh scripts/tier.sh
+scripts/rollback.sh scripts/tier.sh scripts/startup.sh
 """.split()
 DATA_FILES = {f"{APP}/{p}" for p in ASSETS} | {PACKAGEINFO}
 DATA_DIRS = {str(p) for f in DATA_FILES for p in Path(f).parents}
@@ -153,14 +153,15 @@ def read_tar(raw, files, directories):
     return entries
 
 
-def write_tar(entries):
+def write_tar(entries, epoch):
     result = io.BytesIO()
     with tarfile.open(fileobj=result, mode="w", format=tarfile.USTAR_FORMAT) as archive:
         for name, (directory, payload) in sorted(entries.items()):
             info = tarfile.TarInfo(name)
             info.type = tarfile.DIRTYPE if directory else tarfile.REGTYPE
             info.mode = 0o755 if directory or name in EXECUTABLES else 0o644
-            info.uid = info.gid = info.mtime = 0
+            info.uid = info.gid = 0
+            info.mtime = epoch
             info.uname = info.gname = "root"
             info.size = len(payload)
             archive.addfile(info, io.BytesIO(payload))
@@ -186,6 +187,19 @@ def write_ar(members):
         if len(payload) % 2:
             result += b"\n"
     return bytes(result)
+
+
+def source_epoch():
+    # Epoch-zero file dates are rejected by webOS installation. Keep reproducible
+    # metadata without erasing valid dates: use the conventional override, or the
+    # real appinfo source mtime preserved in the frozen build tree.
+    value = os.environ.get("SOURCE_DATE_EPOCH")
+    epoch = int(value) if value is not None else int(
+        (Path(__file__).resolve().parents[1] / "app/appinfo.json").stat().st_mtime
+    )
+    if not 0 < epoch <= 0x7FFFFFFF:
+        raise ValueError("source timestamp must be positive and fit webOS 32-bit time")
+    return epoch
 
 
 def normalize(path):
@@ -217,8 +231,9 @@ def normalize(path):
         )
     except (UnicodeError, tarfile.HeaderError, zlib.error, OverflowError) as error:
         raise ValueError(f"malformed archive: {error}") from error
-    members["control.tar.gz"] = write_tar(control)
-    members["data.tar.gz"] = write_tar(data)
+    epoch = source_epoch()
+    members["control.tar.gz"] = write_tar(control, epoch)
+    members["data.tar.gz"] = write_tar(data, epoch)
     result = write_ar(members)
     if len(result) > MAX_IPK_BYTES:
         raise ValueError("normalized IPK output limit exceeded")

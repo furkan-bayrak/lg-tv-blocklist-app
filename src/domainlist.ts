@@ -41,7 +41,7 @@
  * Attention thresholds (S6b review F3, owner decision): the schema-4 `entries=`
  * count check.sh reports is the number of blocked_names ENTRIES in the
  * materialized list, and LgDomains.presetEntries holds the same kind of count
- * for each tier's preset (safe 20, strict 123), so the two are directly
+ * for each tier's generated preset, so the two are directly
  * comparable. Exactly two thresholds exist, no more:
  *   entries === 0                     -> 'empty' : nothing is blocked right now.
  *   entries * 2 < presetEntries(tier) -> 'low'   : under half of the preset.

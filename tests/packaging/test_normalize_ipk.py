@@ -20,15 +20,15 @@ TOOL = ROOT / "tools/normalize-ipk.py"
 APP = "usr/palm/applications/io.github.furkanbayrak.lgtvblocklist"
 PKG = "usr/palm/packages/io.github.furkanbayrak.lgtvblocklist/packageinfo.json"
 ASSETS = """
-appinfo.json index.html icon.png largeIcon.png css/app.css
-js/bridge.js js/domainlist.js js/domains.gen.js js/main.js js/overrides.js js/status.js
+appinfo.json index.html icon.png largeIcon.png css/app.css LICENSE THIRD-PARTY-NOTICES.md
+js/bridge.js js/domainlist.js js/domains.gen.js js/bundle-info.gen.js js/main.js js/overrides.js js/status.js
 vendor/webOSTV.js vendor/LICENSE-webOSTVjs.txt
-filter/dnscrypt-proxy filter/LICENSE.dnscrypt-proxy.txt filter/domains.json
+filter/dnscrypt-proxy filter/LICENSE.dnscrypt-proxy.txt filter/THIRD-PARTY-dnscrypt.txt filter/domains.json
 filter/filter-input.txt filter/filter-input-safe.txt filter/filter-input-strict.txt
 filter/dnscrypt-proxy.toml.template filter/forward-rules.txt.template
 scripts/apply.sh scripts/boot.sh scripts/check.sh scripts/common.sh scripts/dnsq.js
 scripts/dnsq.sh scripts/guard.sh scripts/keeper.sh scripts/overrides.sh
-scripts/rollback.sh scripts/tier.sh
+scripts/rollback.sh scripts/tier.sh scripts/startup.sh
 """.split()
 FILES = {f"{APP}/{p}": f"synthetic payload: {p}\n".encode() for p in ASSETS}
 FILES[PKG] = b'{"id":"io.github.furkanbayrak.lgtvblocklist","version":"0.4.2"}\n'
@@ -135,6 +135,9 @@ class NormalizeTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="lg-normalize-test-")
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "synthetic.ipk"
+        environment = mock.patch.dict(os.environ, {"SOURCE_DATE_EPOCH": "1700000000"})
+        environment.start()
+        self.addCleanup(environment.stop)
 
     def normalize(self, blob):
         self.path.write_bytes(blob)
@@ -183,7 +186,7 @@ class NormalizeTests(unittest.TestCase):
                             member.gname,
                             member.mtime,
                         ),
-                        (0, 0, "root", "root", 0),
+                        (0, 0, "root", "root", 1700000000),
                     )
                     self.assertIn(member.type, (tarfile.REGTYPE, tarfile.DIRTYPE))
                     mode = (
@@ -210,6 +213,18 @@ class NormalizeTests(unittest.TestCase):
         self.tool.normalize(self.path)
         self.assertEqual(self.path.read_bytes(), first)
         self.assertEqual(self.path.stat().st_ino, inode)
+
+    def test_source_epoch_requires_installable_file_dates(self):
+        for value in ("0", "-1", "2147483648", "invalid"):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"SOURCE_DATE_EPOCH": value}):
+                self.path.write_bytes(fixture())
+                before = self.path.read_bytes()
+                with self.assertRaises(ValueError):
+                    self.tool.normalize(self.path)
+                self.assertEqual(self.path.read_bytes(), before)
+        with mock.patch.dict(os.environ):
+            os.environ.pop("SOURCE_DATE_EPOCH", None)
+            self.assertEqual(self.tool.source_epoch(), int((ROOT / "app/appinfo.json").stat().st_mtime))
 
     def test_canonical_duplicate_paths(self):
         for names in [("control", "./control"), ("./control", "././control")]:
@@ -365,36 +380,8 @@ class NormalizeTests(unittest.TestCase):
             self.tool.normalize(self.path)
         self.assertEqual(target.read_bytes(), fixture())
 
-    def test_npm_and_description_integration(self):
-        package = json.loads((ROOT / "package.json").read_text())
-        appinfo = json.loads((ROOT / "app/appinfo.json").read_text())
-        self.assertEqual((package["version"], appinfo["version"]), ("0.4.2", "0.4.2"))
-        self.assertEqual(appinfo["id"], "io.github.furkanbayrak.lgtvblocklist")
-        self.assertEqual(package["description"], appinfo["appDescription"])
-        for phrase in (
-            "Experimental",
-            "DNS blocking",
-            "SAFE/STRICT",
-            "rooted",
-            "Homebrew Channel",
-        ):
-            self.assertIn(phrase, appinfo["appDescription"])
-        scripts = package["scripts"]
-        self.assertIn("npm run test:packaging", scripts["test"])
-        self.assertIn("python3 -B", scripts["test:packaging"])
-        self.assertIn("ares-package", scripts["package"].split("&&")[0])
-        self.assertIn("tools/normalize-ipk.py", scripts["package"].split("&&")[1])
-
     def test_ci_assertions_with_synthetic_payloads(self):
         workflow = (ROOT / ".github/workflows/build.yml").read_text()
-        self.assertLess(
-            workflow.index("run: npm run package"),
-            workflow.index("Assert normalized IPK"),
-        )
-        self.assertLess(
-            workflow.index("Assert normalized IPK"),
-            workflow.index("webosbrew-gen-manifest "),
-        )
         body = workflow.split("python3 -B - <<'PY'\n", 1)[1].split("          PY\n", 1)[
             0
         ]

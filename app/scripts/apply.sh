@@ -62,6 +62,7 @@ if ! rules_on_verified "$up"; then
   case $RULES_FAIL in
     rules)  log "apply-fail stage=rules";   reason=rules-add ;;
     canary) log "apply-fail stage=e2e";     reason=verify-canary ;;
+    resolver) log "apply-fail stage=resolver"; reason=verify-resolver ;;
     *)      log "apply-fail stage=blocked"; reason=verify-blocked ;;
   esac
   if rules_off; then
