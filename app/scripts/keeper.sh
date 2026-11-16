@@ -117,6 +117,11 @@ while :; do
         else
           fail_open_terminal "rules-readd-verify"
         fi
+      elif ! canary_resolvers; then
+        keeper_lock_on || continue
+        # Apply or a network change may have repaired the path while waiting
+        # for the lock. Only fail open on a fresh configured-resolver failure.
+        canary_resolvers || fail_open_terminal "verify-resolver"
       fi
       continue
     fi

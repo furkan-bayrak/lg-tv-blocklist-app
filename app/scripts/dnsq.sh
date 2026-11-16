@@ -12,6 +12,9 @@ NAME="$1"; SRV="${2:-127.0.0.1}"; PORT="${3:-53}"
 if command -v node >/dev/null 2>&1; then exec node "$SELF_DIR/dnsq.js" "$NAME" "$SRV" "$PORT"; fi
 
 # --- nc fallback (no node): raw query, parse the rcode from byte index 3 ---
+# Busybox nc IPv6 support varies by TV. Without node, do not claim an IPv6
+# resolver was tested: fail open rather than rely on an unsupported nc dialect.
+case "$SRV" in *:*) echo 'ERROR'; exit 1 ;; esac
 q() {
   printf '\022\064\001\000\000\001\000\000\000\000\000\000'
   IFS=.

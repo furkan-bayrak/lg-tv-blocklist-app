@@ -91,6 +91,7 @@
   var nav: HTMLElement[] = [];
   var focusIndex = 0;
   var busy = false;
+  var busyFocus: HTMLElement | null = null;
   var ready = false;
   var rootConfirmed = false;
   var cleanupOpen = false;
@@ -198,6 +199,8 @@
       show('Not ready', 'Refresh status and resolve the prerequisite message before making changes.');
       return;
     }
+    var active = document.activeElement as HTMLElement | null;
+    busyFocus = active && nav.indexOf(active) !== -1 ? active : null;
     busy = true;
     syncControls();
     action();
@@ -206,6 +209,14 @@
   function finish(): void {
     busy = false;
     syncControls();
+    var restore = busyFocus;
+    busyFocus = null;
+    // Disabling a focused button can leave BODY focused on the TV. Restore
+    // only a still-usable control, without stealing focus from the user.
+    if (restore && nav.indexOf(restore) !== -1 &&
+        (!document.activeElement || document.activeElement === document.body)) {
+      setFocused(restore);
+    }
   }
 
   // ---- focus order -----------------------------------------------------------
@@ -249,6 +260,10 @@
   }
 
   function setFocused(node: HTMLElement): void {
+    // Confirmation flows deliberately choose their return control while busy.
+    if (busy) {
+      busyFocus = node;
+    }
     node.focus();
   }
 
@@ -477,6 +492,9 @@
         return 'Verification failed — protection was rolled back. TV works normally.';
       case 'verify-blocked':
         return "The filter didn't block as expected — rolled back.";
+      case 'verify-resolver':
+        return "The TV's configured DNS path bypasses filtering — protection was rolled back. " +
+          "Keep protection OFF: this TV's resolver configuration is not supported. See Advanced diagnostics.";
       case 'rules-add':
         return "Couldn't apply firewall rules — rolled back.";
       case 'materialize':
@@ -505,7 +523,7 @@
     if (result === 'fail') {
       return reason === 'locked' || reason === 'cleanup-failed' || reason === 'upstream-unreachable' || reason === 'materialize' ||
         reason === 'filter-sideport' || reason === 'rules-add' || reason === 'verify-canary' ||
-        reason === 'verify-blocked';
+        reason === 'verify-blocked' || reason === 'verify-resolver';
     }
     return false;
   }
@@ -1385,10 +1403,11 @@
 
   function entriesLine(block: TvStatus): string {
     var api = listModule();
+    var label = block.mode === 'on' ? 'Blocked entries: ' : 'Last prepared entries: ';
     if (!api) {
-      return 'Blocked entries: ' + block.entries;
+      return label + block.entries;
     }
-    return 'Blocked entries: ' + block.entries + ' (this tier\'s preset has ' +
+    return label + block.entries + ' (this tier\'s preset has ' +
       api.presetEntries()[block.tier] + ')';
   }
 

@@ -4,7 +4,7 @@
 # LGTVB_STATE_DIR, LGTVB_FILTER_BIN, LGTVB_DNSQ, LGTVB_TICK, LGTVB_GUARD_TICK,
 # LGTVB_BACKOFF, LGTVB_UWAIT_ROUNDS, LGTVB_UWAIT_SLEEP, LGTVB_GUARD_GRACE,
 # LGTVB_RULES_RETRY, LGTVB_RULES_RETRY_SLEEP, LGTVB_HOOK_DIR, LGTVB_TARGETS_FILE,
-# LGTVB_CANARY_EVERY, LGTVB_PROC_TCP.
+# LGTVB_CANARY_EVERY, LGTVB_PROC_TCP, LGTVB_RESOLV_CONF.
 #
 # This file is a sourced library: its variables are consumed by the scripts that
 # source it (apply/rollback/check/boot/keeper/guard), so shellcheck's "appears
@@ -224,6 +224,32 @@ canary_blocked() {  # system path (through DNAT); expect rcode!=0 (REFUSED) → 
   rc=$?
   [ "$rc" -eq 2 ]
 }
+
+# Probe EVERY configured resolver, not just the IPv4 loopback DNAT path. A
+# passing control plus the filter's exact REFUSED response is required: an
+# upstream NXDOMAIN, foreign hosts entry, or unusable IPv6 socket proves nothing.
+# Re-read on each verification so keeper recovery observes network changes.
+canary_resolvers() (
+  cr_conf=${LGTVB_RESOLV_CONF:-/etc/resolv.conf}
+  [ -f "$cr_conf" ] && [ -r "$cr_conf" ] || return 1
+  cr_servers=$(awk '$1 == "nameserver" { if (NF < 2 || $2 ~ /^[#;]/) exit 1; print $2 }' "$cr_conf" 2>/dev/null) || return 1
+  [ -n "$cr_servers" ] || return 1
+  cr_name=$(blocked_name)
+  [ -n "$cr_name" ] || return 1
+  while read -r cr_server; do
+    [ -n "$cr_server" ] || return 1
+    dnsq example.com "$cr_server" >/dev/null 2>&1 || return 1
+    cr_answer=$(dnsq "$cr_name" "$cr_server" 2>/dev/null)
+    cr_rc=$?
+    [ "$cr_rc" -eq 2 ] || return 1
+    case "$cr_answer" in
+      'rcode=5 '*) ;;
+      *) return 1 ;;
+    esac
+  done <<EOF
+$cr_servers
+EOF
+)
 
 # Active tier: 'safe' | 'strict'. One state lookup, normalized here so every
 # reader (materialize, check.sh) agrees on the value and on the default.
@@ -504,7 +530,7 @@ rules_present() {  # $1 upstream — all -C checks must pass
 # (xtables lock contention with another app, one DNS flake) does not immediately
 # burn the terminal fail-open path. rules_on is re-run each attempt (idempotent)
 # because a lock error can leave the chain half-built. Sets
-# RULES_FAIL=rules|canary|blocked on final failure so callers keep their
+# RULES_FAIL=rules|canary|blocked|resolver on final failure so callers keep their
 # specific failure reasons.
 rules_on_verified() {
   # T8 review nit: POSIX sh has no `local`; these used to shadow the shared
@@ -526,6 +552,8 @@ rules_on_verified() {
       RULES_FAIL=canary
     elif ! canary_blocked; then
       RULES_FAIL=blocked
+    elif ! canary_resolvers; then
+      RULES_FAIL=resolver
     else
       [ "$rr_r" -gt 1 ] && log "rules-retry-ok n=$rr_r"
       return 0

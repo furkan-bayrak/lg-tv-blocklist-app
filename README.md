@@ -4,7 +4,7 @@ Companion app to [furkan-bayrak/lg-tv-blocklist](https://github.com/furkan-bayra
 one switch to stop LG ads and telemetry on a rooted LG webOS TV, installed from
 the Homebrew Channel. No server, no extra hardware, no router changes.
 
-**Status: experimental — v0.4.3, local trial candidate.** Plain first-launch
+**Status: experimental — v0.4.4, local trial candidate.** Plain first-launch
 prerequisite checks, SAFE/STRICT profiles, domain overrides, verified cleanup
 and a startup setting are implemented. Fresh installs remain SAFE and OFF.
 Earlier versions have LG G1/webOS 6 evidence in `docs/test-evidence/`; that does
@@ -44,7 +44,7 @@ Requires Node.js 20.19+ (20.x), 22.13+ (22.x), or 24+; Node 22 is recommended.
 
 ```sh
 npm ci
-npm run dist   # -> dist/io.github.furkanbayrak.lgtvblocklist_0.4.3_all.ipk
+npm run dist   # -> dist/io.github.furkanbayrak.lgtvblocklist_0.4.4_all.ipk
 ```
 
 For development, `npm run build && npm run lint` checks the emitted JavaScript
@@ -114,6 +114,12 @@ that DNS blocking prevents every firmware-update path.
 - Launch automatically checks Homebrew root access and required package components;
   mutations stay unavailable when readiness cannot be confirmed. Connection failure
   is not reported as proof that root is missing.
+- Protection activation verifies every configured DNS resolver, not just IPv4
+  loopback. A resolver bypass rolls protection back instead of claiming ON.
+  The tested G1's `::1` resolver path bypasses the IPv4 firewall, even with
+  interface IPv6 disabled. Protection stays OFF on that configuration.
+  The app does not rewrite system DNS settings. App-specific encrypted DNS
+  is outside DNS interception as well.
 - **Start protection after reboot** controls only this app’s startup link. It
   resumes the saved ON/OFF intent; changing it does not enable protection now.
 - **Disable and remove startup** asks for confirmation, verifies protection OFF

@@ -76,6 +76,11 @@ const STATUS_BLOCK_ON = STATUS_BLOCK
   .replace('cap=unsupported', 'cap=dnat')
   .replace('entries=0', 'entries=' + PRESET.safe);
 
+const STATUS_BLOCK_OFF = STATUS_BLOCK
+  .replace('mode=degraded', 'mode=off')
+  .replace('cap=unsupported', 'cap=dnat')
+  .replace('rule=absent', 'rule=off');
+
 const STATUS_BLOCK_ON_STRICT = STATUS_BLOCK_ON
   .replace('tier=safe', 'tier=strict')
   .replace('entries=' + PRESET.safe, 'entries=' + PRESET.strict);
@@ -144,12 +149,21 @@ function loadMain(options = {}) {
     }
   };
   function makeElement(id) {
+    let disabled = false;
     return {
       id: id || '',
       textContent: '',
       className: '',
       hidden: false,
-      disabled: false,
+      get disabled() {
+        return disabled;
+      },
+      set disabled(value) {
+        disabled = value;
+        if (value && doc.activeElement === this) {
+          doc.activeElement = doc.body;
+        }
+      },
       attrs: {},
       handlers: {},
       children: [],
@@ -164,10 +178,14 @@ function loadMain(options = {}) {
         return child;
       },
       focus() {
-        doc.activeElement = this;
+        if (!this.disabled) {
+          doc.activeElement = this;
+        }
       }
     };
   }
+  doc.body = makeElement('body');
+  doc.activeElement = doc.body;
   for (const id of ELEMENT_IDS) {
     elements[id] = makeElement(id);
   }
@@ -304,6 +322,118 @@ test('automatic readiness requires confirmed root and never mutates first-launch
   assert.equal(count(calls, 'registerHook'), 0);
 });
 
+test('only live ON counts are labeled blocked; other counts are last prepared entries', () => {
+  const blocks = [
+    STATUS_BLOCK_OFF.replace('entries=0', 'entries=123'),
+    STATUS_BLOCK.replace('entries=0', 'entries=123'),
+    STATUS_BLOCK_OFF.replace('pointer=off', 'pointer=on').replace('entries=0', 'entries=123'),
+    STATUS_BLOCK_ON
+  ];
+  for (const withDomainList of [true, false]) {
+    for (const block of blocks) {
+      const { elements, pending } = loadMain({ withDomainList });
+      if (withDomainList) {
+        resolveProbe(pending, block);
+      } else {
+        resolve(pending, 'runCheck', { returnValue: true, stdoutString: block });
+      }
+      const on = block === STATUS_BLOCK_ON;
+      const label = on ? 'Blocked entries: ' + PRESET.safe : 'Last prepared entries: 123';
+      assert.ok(elements['summary'].textContent.includes(label));
+      assert.ok(elements['panel'].textContent.includes(label));
+      if (!on) {
+        assert.ok(!elements['summary'].textContent.includes('Blocked entries:'));
+        assert.ok(!elements['panel'].textContent.includes('Blocked entries:'));
+      }
+    }
+  }
+});
+
+test('protection actions restore a usable focused button after the live refresh', () => {
+  for (const turningOn of [true, false]) {
+    const { elements, pending, doc } = loadMain();
+    resolveProbe(pending, turningOn ? STATUS_BLOCK_OFF : STATUS_BLOCK_ON);
+    const button = elements['btn-protect'];
+    button.focus();
+    button.handlers.click();
+    assert.equal(button.disabled, true);
+    assert.equal(doc.activeElement, doc.body);
+    resolve(pending, turningOn ? 'runApply' : 'runRollback', {
+      returnValue: true,
+      stdoutString: turningOn ? 'RESULT=on\nreason=verified' : 'RESULT=off\nreason=user-off'
+    });
+    assert.equal(doc.activeElement, doc.body, 'wait for the live refresh before restoring focus');
+    resolve(pending, 'runCheck', {
+      returnValue: true,
+      stdoutString: turningOn ? STATUS_BLOCK_ON : STATUS_BLOCK_OFF
+    });
+    assert.equal(button.disabled, false);
+    assert.equal(doc.activeElement, button);
+  }
+});
+
+test('action completion neither steals moved focus nor restores a now-disabled control', () => {
+  for (const readable of [true, false]) {
+    const { elements, pending, doc } = loadMain();
+    resolveProbe(pending, STATUS_BLOCK_ON);
+    elements['btn-protect'].focus();
+    elements['btn-protect'].handlers.click();
+    if (readable) {
+      elements['btn-refresh'].focus();
+    }
+    resolve(pending, 'runRollback', { returnValue: true, stdoutString: 'RESULT=off\nreason=user-off' });
+    resolve(pending, 'runCheck', readable
+      ? { returnValue: true, stdoutString: STATUS_BLOCK_OFF }
+      : { returnValue: false, errorText: 'exit 5' });
+    assert.equal(doc.activeElement, readable ? elements['btn-refresh'] : doc.body);
+    assert.equal(elements['btn-protect'].disabled, !readable);
+  }
+});
+
+test('resolver verification failure is accepted only for a failed apply result', () => {
+  for (const result of ['fail', 'on', 'off', 'degraded', 'unknown']) {
+    const { elements, calls, pending } = loadMain();
+    resolveProbe(pending, STATUS_BLOCK_OFF);
+    elements['btn-protect'].handlers.click();
+    resolve(pending, 'runApply', {
+      returnValue: true,
+      stdoutString: 'RESULT=' + result + '\nreason=verify-resolver'
+    });
+    resolve(pending, 'runCheck', { returnValue: true, stdoutString: STATUS_BLOCK_OFF });
+    const message = elements['status'].textContent;
+    if (result === 'fail') {
+      assert.match(message, /configured DNS path bypasses filtering/);
+      assert.match(message, /protection was rolled back/);
+    } else {
+      assert.equal(message, "The TV didn't return a clear result. Check the status below.");
+    }
+    assert.equal(elements['protection'].className, 'protection is-off');
+    assert.equal(count(calls, 'runApply'), 1);
+  }
+});
+
+test('domain saves retain actionable resolver guidance when protection re-apply fails', () => {
+  const { elements, pending } = loadMain();
+  resolveProbe(pending, STATUS_BLOCK_ON);
+  rowByName(elements, SAFE_ROW).handlers.click();
+  elements['btn-domain-apply'].handlers.click();
+  resolve(pending, 'saveOverrides', {
+    returnValue: true,
+    stdoutString: 'RESULT=overrides\nreason=saved'
+  });
+  resolve(pending, 'runApply', {
+    returnValue: true,
+    stdoutString: 'RESULT=fail\nreason=verify-resolver'
+  });
+  resolveProbe(pending, STATUS_BLOCK_OFF, listWith('safe', { [SAFE_ROW]: false }));
+  assert.equal(elements['status'].textContent, 'Domain changes saved');
+  const message = elements['domains-status'].textContent;
+  assert.match(message, /Changes saved, but protection was not re-applied/);
+  assert.match(message, /configured DNS path bypasses filtering/);
+  assert.equal(elements['domains-status'].className, 'domains-status is-error');
+  assert.equal(elements['protection'].className, 'protection is-off');
+});
+
 test('missing package components and foreign startup state refuse mutation', () => {
   const damaged = loadMain();
   resolveProbe(damaged.pending, STATUS_BLOCK.replace('scripts=ok', 'scripts=missing'));
@@ -318,11 +448,13 @@ test('missing package components and foreign startup state refuse mutation', () 
 });
 
 test('removal cancellation changes nothing; cleanup failure retains startup', () => {
-  const { elements, calls, pending } = loadMain();
+  const { elements, calls, pending, doc } = loadMain();
   resolveProbe(pending, STATUS_BLOCK_ON);
   elements['btn-cleanup'].handlers.click();
   assert.equal(elements['cleanup-confirm'].hidden, false);
+  assert.equal(doc.activeElement, elements['btn-cleanup-cancel']);
   elements['btn-cleanup-cancel'].handlers.click();
+  assert.equal(doc.activeElement, elements['btn-cleanup']);
   assert.equal(count(calls, 'runRollback'), 0);
   elements['btn-cleanup'].handlers.click();
   elements['btn-cleanup-confirm'].handlers.click();
@@ -330,6 +462,7 @@ test('removal cancellation changes nothing; cleanup failure retains startup', ()
   resolve(pending, 'runCheck', { returnValue: true, stdoutString: STATUS_BLOCK_ON });
   assert.equal(count(calls, 'removeHook'), 0);
   assert.match(elements['status'].textContent, /keep the app installed/);
+  assert.equal(doc.activeElement, elements['btn-cleanup']);
 });
 
 test('removal requires verified OFF before hook deletion and verifies the final state', () => {
@@ -745,12 +878,13 @@ test('a list that cannot be read clears the rows instead of showing stale ones',
 });
 
 test('reset asks first, names the preset, and drops staged edits only after a clear', () => {
-  const { elements, calls, pending, cleared } = loadMain();
+  const { elements, calls, pending, cleared, doc } = loadMain();
   resolveProbe(pending, STATUS_BLOCK);
   rowByName(elements, SAFE_ROW).handlers.click();
   elements['btn-domain-reset'].handlers.click();
   // The confirmation is explicit: preset named, cost stated, nothing sent yet.
   assert.equal(elements['domains-confirm'].hidden, false);
+  assert.equal(doc.activeElement, elements['btn-domain-reset-confirm']);
   const prompt = elements['domains-confirm-text'].textContent;
   assert.ok(prompt.includes('SAFE'));
   assert.ok(prompt.includes('staged'));
@@ -759,12 +893,14 @@ test('reset asks first, names the preset, and drops staged edits only after a cl
   // Cancel leaves the staged diff exactly as it was.
   elements['btn-domain-reset-cancel'].handlers.click();
   assert.equal(elements['domains-confirm'].hidden, true);
+  assert.equal(doc.activeElement, elements['btn-domain-reset']);
   assert.ok(elements['domains-status'].textContent.includes('1 unsaved change'));
   assert.ok(elements['domains-status'].textContent.includes('cancelled'));
   // Confirm runs one clear command; the staged edit belonged to the cleared diff.
   elements['btn-domain-reset'].handlers.click();
   elements['btn-domain-reset-confirm'].handlers.click();
   assert.equal(count(calls, 'clearOverrides'), 1);
+  assert.equal(doc.activeElement, doc.body, 'the disabled confirmation cannot retain focus');
   assert.equal(cleared.length, 1);
   assert.equal(count(calls, 'runApply'), 0, 'protection is off: nothing restarts');
   resolve(pending, 'clearOverrides', {
@@ -777,6 +913,7 @@ test('reset asks first, names the preset, and drops staged edits only after a cl
   assert.ok(elements['domains-status'].textContent.includes('No unsaved changes.'));
   assert.equal(rowByName(elements, SAFE_ROW).className.indexOf('is-changed'), -1);
   assert.equal(elements['domains-confirm'].hidden, true);
+  assert.equal(doc.activeElement, elements['btn-domain-reset']);
 });
 
 test('reset with protection ON clears, then restarts exactly once', () => {
@@ -825,6 +962,8 @@ test('an ON filter with nothing blocked is attention, not a healthy green', () =
   assert.equal(elements['domains-status'].className, 'domains-status is-attention');
   // The card offers the way out, and the entries line names the preset size.
   assert.equal(elements['btn-protect'].textContent, 'Turn off protection');
+  assert.ok(elements['summary'].textContent.includes('Blocked entries: 0'));
+  assert.ok(elements['panel'].textContent.includes('Blocked entries: 0'));
 });
 
 test('arrow keys walk the rows in order and follow the open confirmation', () => {

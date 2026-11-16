@@ -335,6 +335,11 @@ new_app_sandbox() {
   # (port 5335 = 0x14D7, local 127.0.0.1, state 0A = LISTEN). Tests that need
   # "device without the port" overwrite this file after new_app_sandbox.
   printf '  sl  local_address rem_address   st\n   0: 0100007F:14D7 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100\n' > "$SB/proc_tcp"
+  # Every DNS-path test uses an isolated resolver configuration, never the host.
+  printf 'nameserver 127.0.0.1\n' > "$SB/resolv.conf"
+  export LGTVB_RESOLV_CONF="$SB/resolv.conf"
+  export TEST_DNSQ_QUERY_RC="$SB/dnsq-query-rc"
+  : > "$TEST_DNSQ_QUERY_RC"
   # probe.sh — sources common.sh with the same $0-based paths as the app scripts,
   # so the suite can call helpers directly (state_set, state_get, cmdline_has,
   # materialize) instead of only through the fixed entrypoints.
@@ -478,6 +483,11 @@ seed_rules() {  # seed_rules <upstream> — fake ruleset WITHOUT polluting TEST_
 }
 
 start_fake_filter() {
+  # A modeled serving filter has a materialized list and refuses its canary.
+  [ -f "$SB/state/filter-input.txt" ] || cp "$SB/appdir/filter/filter-input.txt" "$SB/state/filter-input.txt"
+  if [ ! -s "$TEST_DNSQ_NAME_RC" ]; then
+    printf '%s 2\n' "$(grep -m1 '^=' "$SB/state/filter-input.txt" | cut -c2-)" > "$TEST_DNSQ_NAME_RC"
+  fi
   LGTVB_STATE_DIR="$SB/state" TEST_LOG="$TEST_LOG" "$SB/bin/fake-dnscrypt-proxy" -config "$SB/state/dnscrypt-proxy.toml" >> "$SB/state/filter.log" 2>&1 </dev/null &
   echo $! > "$SB/state/filter.pid"
   sleep 0.3
@@ -507,6 +517,12 @@ exit_check() {  # exit_check <name> <pid> <max 0.2s iterations> — process must
   while [ "$n" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do sleep 0.2; n=$((n+1)); done
   if kill -0 "$2" 2>/dev/null; then no "$1" "still alive (pid $2)"; else ok "$1"; fi
 }
+
+. "$HERE/resolver-safety.sh"
+if [ "${LGTVB_SAFETY_ONLY:-}" = resolver ]; then
+  printf '\n%s passed, %s failed\n' "$pass" "$fail"
+  [ "$fail" -eq 0 ]; exit $?
+fi
 
 # Trial safety scenarios share this harness; all firewall calls remain stubbed.
 . "$HERE/trial-safety.sh"
@@ -922,7 +938,7 @@ if wait_for "$TEST_LOG" 'filter-killed' 100; then ok "keeper recovery: dead filt
 dell="$(log_line '-t nat -D OUTPUT -j LGTVBLK')"
 killl="$(log_line 'filter-killed')"
 if [ -n "$dell" ] && [ -n "$killl" ] && [ "$dell" -lt "$killl" ]; then ok "keeper recovery: rule deletes BEFORE filter kill"; else no "keeper recovery: rule deletes BEFORE filter kill" "del=$dell kill=$killl"; fi
-printf '127.0.0.1 0\n' > "$TEST_DNSQ_SERVER_RC"     # dnsq "recovers"
+: > "$TEST_DNSQ_SERVER_RC"                       # dnsq recovers; name rules still apply
 if wait_for "$SB/state/journal.log" 'keeper-recovered' 200; then ok "keeper recovery: recovered after dnsq return"; else no "keeper recovery: recovered after dnsq return" "$(cat "$SB/state/journal.log" 2>/dev/null)"; fi
 rcount="$(grep -c 'keeper-restart n=' "$SB/state/journal.log" 2>/dev/null || true)"
 if [ -n "$rcount" ] && [ "$rcount" -ge 1 ] && [ "$rcount" -le 3 ]; then ok "keeper recovery: bounded restarts (1..3)"; else no "keeper recovery: bounded restarts (1..3)" "count=$rcount"; fi
@@ -1116,7 +1132,8 @@ entries=0
 # --- T5 Case 2: check.sh — full live ON state (one pair / 16 keys / LF) -------
 new_app_sandbox
 printf 'upstream=192.168.179.1\ncap=dnat\npointer=on\n' > "$SB/state/state"
-blocked="$(grep -m1 '^=' "$SB/appdir/filter/filter-input.txt" | cut -c2-)"
+blocked=blocked.example.test
+printf '=%s\n' "$blocked" > "$SB/state/filter-input.txt"
 printf '%s 2\n' "$blocked" > "$TEST_DNSQ_NAME_RC"
 seed_rules 192.168.179.1
 start_fake_filter
@@ -1145,7 +1162,7 @@ mode=on
 upstream=192.168.179.1
 cap=dnat
 tier=safe
-entries=0
+entries=1
 @@STATUS-END"
 begincount="$(printf '%s\n' "$OUT" | grep -c '^@@STATUS-BEGIN$')"
 endcount="$(printf '%s\n' "$OUT" | grep -c '^@@STATUS-END$')"
@@ -1908,7 +1925,10 @@ NC_STUB
   export NC_RESPONSE_FILE="$1" NC_STUB_CALLED="$SB_NC/nc-called"
   OUT="$(env PATH="$SB_NC" NC_RESPONSE_FILE="$1" NC_STUB_CALLED="$NC_STUB_CALLED" "$SH" "$SCRIPTS_SRC/dnsq.sh" "${2:-example.com}" "${3:-127.0.0.1}" "${4:-53}" 2>&1)"
   RC=$?
-  if [ -s "$NC_STUB_CALLED" ]; then ok "dnsq nc: hermetic nc stub selected"; else no "dnsq nc: hermetic nc stub selected" "nc stub was not invoked (node may have taken precedence)"; fi
+  case "${3:-127.0.0.1}" in
+    *:*) if [ ! -e "$NC_STUB_CALLED" ]; then ok "dnsq nc: IPv6 fails without invoking unsupported nc"; else no "dnsq nc: IPv6 fails without invoking unsupported nc" "nc invoked"; fi ;;
+    *) if [ -s "$NC_STUB_CALLED" ]; then ok "dnsq nc: hermetic nc stub selected"; else no "dnsq nc: hermetic nc stub selected" "nc stub was not invoked (node may have taken precedence)"; fi ;;
+  esac
 }
 
 new_app_sandbox
@@ -1928,6 +1948,8 @@ if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q 'TIMEOUT'; then ok "dnsq nc
 printf '\022\064' > "$SB/nc-short.bin"
 run_dnsq_nc "$SB/nc-short.bin"
 if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q 'TIMEOUT'; then ok "dnsq nc: short response → rc 1 TIMEOUT"; else no "dnsq nc: short response → rc 1 TIMEOUT" "rc=$RC out=[$OUT]"; fi
+run_dnsq_nc "$SB/nc-noerror.bin" example.com ::1
+if [ "$RC" -eq 1 ] && [ "$OUT" = ERROR ]; then ok "dnsq nc: IPv6 unsupported fails safely"; else no "dnsq nc: IPv6 unsupported fails safely" "rc=$RC out=[$OUT]"; fi
 cleanup_app_sandbox
 
 # ==================== S4 review fixes (N2, N4) ====================

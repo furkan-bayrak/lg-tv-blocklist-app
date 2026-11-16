@@ -1,6 +1,6 @@
 {
   "name": "lg-tv-blocklist-app",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "private": true,
   "description": "Experimental DNS blocking with SAFE/STRICT profiles for rooted LG webOS TVs via the Homebrew Channel.",
   "license": "MIT",

@@ -5,6 +5,8 @@
 #                        fragment is a substring of $1 (query name) wins
 #   TEST_DNSQ_SERVER_RC  file of "<server> <rc>" lines — first line whose server
 #                        equals $2 wins; wins over the name-file when both match
+#   TEST_DNSQ_QUERY_RC   file of "<server> <name> <rc> <rcode>" exact queries,
+#                        applied last; logs queries to the same path + ".log"
 rc=${TEST_DNSQ_RC:-0}
 if [ -n "${TEST_DNSQ_NAME_RC:-}" ] && [ -f "$TEST_DNSQ_NAME_RC" ]; then
   while read -r pat r; do
@@ -18,11 +20,9 @@ if [ -n "${TEST_DNSQ_SERVER_RC:-}" ] && [ -f "$TEST_DNSQ_SERVER_RC" ]; then
     if [ "${2:-}" = "$pat" ]; then rc=$r; break; fi
   done < "$TEST_DNSQ_SERVER_RC"
 fi
-# T8-F3: with TEST_DNSQ_IPT_GATE set, a blocked-name query on the SYSTEM path
-# (no server argument) is REFUSED (rc 2) only when the app's NAT jump exists in
-# the fake ruleset — mirroring the real device, where a half-installed chain
-# lets blocked names resolve. Non-blocked names keep the scripted rc.
-if [ -n "${TEST_DNSQ_IPT_GATE:-}" ] && [ -z "${2:-}" ] && [ -n "${LGTVB_STATE_DIR:-}" ] && [ -n "${TEST_IPT_STATE:-}" ] && [ -f "$LGTVB_STATE_DIR/filter-input.txt" ]; then
+# With TEST_DNSQ_IPT_GATE, blocked queries to IPv4 loopback are REFUSED only
+# while the NAT jump exists. Explicit configured-loopback probes use this too.
+if [ -n "${TEST_DNSQ_IPT_GATE:-}" ] && [ "${2:-127.0.0.1}" = 127.0.0.1 ] && [ -n "${LGTVB_STATE_DIR:-}" ] && [ -n "${TEST_IPT_STATE:-}" ] && [ -f "$LGTVB_STATE_DIR/filter-input.txt" ]; then
   bn="$(grep -m1 '^=' "$LGTVB_STATE_DIR/filter-input.txt" 2>/dev/null | cut -c2-)"
   if [ -n "$bn" ]; then
     case "$1" in
@@ -32,4 +32,17 @@ if [ -n "${TEST_DNSQ_IPT_GATE:-}" ] && [ -z "${2:-}" ] && [ -n "${LGTVB_STATE_DI
     esac
   fi
 fi
+rcode=0
+[ "$rc" -ne 2 ] || rcode=5
+if [ -n "${TEST_DNSQ_QUERY_RC:-}" ]; then
+  printf '%s %s %s\n' "${2:-127.0.0.1}" "$1" "${3:-53}" >> "$TEST_DNSQ_QUERY_RC.log"
+  if [ -f "$TEST_DNSQ_QUERY_RC" ]; then
+    while read -r server name result code; do
+      if [ "${2:-127.0.0.1}" = "$server" ] && [ "$1" = "$name" ]; then
+        rc=$result; rcode=$code; break
+      fi
+    done < "$TEST_DNSQ_QUERY_RC"
+  fi
+fi
+if [ "$rc" -eq 1 ]; then echo TIMEOUT; else echo "rcode=$rcode ancount=0 none"; fi
 exit "$rc"
